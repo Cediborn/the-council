@@ -1,10 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { parseJsonObject, validate, isPlainObject, unwrapNestedObject } from "@/lib/council/parse";
-import { verdictSchema, agentAnalysisSchema } from "@/lib/council/schemas";
+import {
+  verdictSchema,
+  agentAnalysisSchema,
+  comparisonSchema,
+  reassessmentSchema,
+} from "@/lib/council/schemas";
 
 describe("parseJsonObject", () => {
   it("parses exact JSON", () => {
     expect(parseJsonObject('{"a":1}')).toEqual({ a: 1 });
+  });
+
+  it("parses a JSON-encoded string wrapping an object", () => {
+    // Small models sometimes return "{\"summary\":...}" — a string containing
+    // the object — instead of a raw object. Must unwrap to the object.
+    const wrapped = JSON.stringify(JSON.stringify({ summary: "hi", keyPoints: ["a"] }));
+    expect(parseJsonObject(wrapped)).toEqual({ summary: "hi", keyPoints: ["a"] });
+  });
+
+  it("keeps a plain JSON string as a string when it is not itself JSON", () => {
+    expect(parseJsonObject('"just a string"')).toBe("just a string");
   });
 
   it("parses JSON wrapped in markdown fences", () => {
@@ -196,6 +212,45 @@ describe("validate", () => {
     if (result.ok) expect(result.data.stance).toBe("NEUTRAL");
   });
 
+  it("coerces null list fields into empty arrays", () => {
+    const messy = {
+      summary: "An analysis.",
+      stance: "SUPPORT",
+      keyPoints: null,
+      assumptions: null,
+      risks: ["a"],
+      confidence: 60,
+    };
+    const result = validate(agentAnalysisSchema, messy);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.keyPoints).toEqual([]);
+      expect(result.data.assumptions).toEqual([]);
+      expect(result.data.risks).toEqual(["a"]);
+    }
+  });
+
+  it("coerces empty-string list fields into empty arrays (V0.2 regression)", () => {
+    // Small models frequently emit "" where a list is expected; this must NOT
+    // fail validation (previously the raw "" bypassed the default and broke
+    // the whole analysis, degrading every agent that did it).
+    const messy = {
+      summary: "An analysis.",
+      stance: "SUPPORT",
+      keyPoints: ["A point"],
+      assumptions: "",
+      risks: [],
+      missingInformation: "",
+      confidence: 60,
+    };
+    const result = validate(agentAnalysisSchema, messy);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.assumptions).toEqual([]);
+      expect(result.data.missingInformation).toEqual([]);
+    }
+  });
+
   it("coerces scalar string list fields into single-element arrays", () => {
     // Small local models often emit a plain string where an array is expected.
     const messy = {
@@ -233,6 +288,56 @@ describe("validate", () => {
       expect(result.data.assumptions).toEqual(["Tech has moved on."]);
       expect(result.data.risks).toEqual(["$200 is a real cost.", "Old hardware."]);
     }
+  });
+
+  it("accepts the richer V0.2 comparison with contradictions/risks/insights", () => {
+    const rich = {
+      agreements: [{ topic: "topic", agents: ["Reasoner"], summary: "agree" }],
+      disagreements: [],
+      contradictions: [{ topic: "feasibility", summary: "Reasoner says cheap, Practicalist says costly" }],
+      sharedAssumptions: ["assume budget"],
+      missingInformation: ["actual market size"],
+      risks: ["cost overrun"],
+      uniqueInsights: ["only Skeptic noted X"],
+      stanceCounts: { SUPPORT: 2, OPPOSE: 1 },
+    };
+    const result = validate(comparisonSchema, rich);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.contradictions).toHaveLength(1);
+      expect(result.data.missingInformation).toContain("actual market size");
+      expect(result.data.risks).toContain("cost overrun");
+      expect(result.data.uniqueInsights).toContain("only Skeptic noted X");
+      expect(result.data.stanceCounts.SUPPORT).toBe(2);
+    }
+  });
+
+  it("accepts a valid reassessment", () => {
+    const good = {
+      summary: "the stress test hardened the core argument",
+      hardened: ["feasibility"],
+      weakened: ["demand assumption"],
+      positionChanges: [{ agent: "Skeptic", from: "OPPOSE", to: "CONDITIONAL" }],
+      judgeGuidance: "weigh feasibility more heavily",
+    };
+    const result = validate(reassessmentSchema, good);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.positionChanges[0].to).toBe("CONDITIONAL");
+  });
+
+  it("defaults the missing whyThisVerdictWon field", () => {
+    const result = validate(verdictSchema, {
+      verdict: "BUILD",
+      score: 7,
+      confidence: 80,
+      summary: "x",
+      strongestArgumentFor: "x",
+      strongestArgumentAgainst: "x",
+      recommendedAction: "x",
+      reasoning: "x",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.whyThisVerdictWon).toBe("");
   });
 
   it("coerces scalar string lists in verdicts", () => {

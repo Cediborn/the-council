@@ -65,6 +65,35 @@ export function resolveProvider(): ModelProvider {
   return buildOllama();
 }
 
+export type ProviderStage =
+  | "analysis"
+  | "comparison"
+  | "devils_advocate"
+  | "reassessment"
+  | "judge";
+
+/**
+ * Per-stage model routing (Part 21): a stage can be pinned to a different
+ * model via COUNCIL_MODEL_<STAGE> env vars (e.g. a cheap model for analysis,
+ * a stronger one for the Judge). Falls back to the default provider when no
+ * override is configured. No complex paid routing — just the seam for it.
+ */
+const STAGE_MODEL_ENV: Record<ProviderStage, string> = {
+  analysis: "COUNCIL_MODEL_ANALYSIS",
+  comparison: "COUNCIL_MODEL_COMPARISON",
+  devils_advocate: "COUNCIL_MODEL_DEVILS_ADVOCATE",
+  reassessment: "COUNCIL_MODEL_REASSESSMENT",
+  judge: "COUNCIL_MODEL_JUDGE",
+};
+
+export function resolveProviderForStage(stage: ProviderStage): ModelProvider {
+  const base = resolveProvider();
+  const modelEnv = STAGE_MODEL_ENV[stage];
+  const model = modelEnv ? process.env[modelEnv] : undefined;
+  if (model && base.withModel) return base.withModel(model);
+  return base;
+}
+
 export function describeProvider(provider: ModelProvider): { provider: string; model: string } {
   return { provider: provider.id, model: provider.model };
 }

@@ -30,9 +30,16 @@ export class OllamaProvider implements ModelProvider {
     this.numCtx = Number(process.env.OLLAMA_NUM_CTX ?? 8192);
   }
 
+  withModel(model: string): ModelProvider {
+    return new OllamaProvider({ url: this.url, model });
+  }
+
   async chat(input: ProviderChatInput): Promise<ProviderChatResult> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 180_000);
+    // Timeout is env-configurable (default 180s) so a hung model call can
+    // never block the Council forever (Part 22).
+    const timeoutMs = Number(process.env.COUNCIL_TIMEOUT_MS ?? 180_000);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const onOuterAbort = () => controller.abort();
     input.signal?.addEventListener("abort", onOuterAbort);
 

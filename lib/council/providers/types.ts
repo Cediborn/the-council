@@ -31,4 +31,11 @@ export interface ModelProvider {
   readonly id: string;
   readonly model: string;
   chat(input: ProviderChatInput): Promise<ProviderChatResult>;
+  /**
+   * Return a provider for a different model (same endpoint/config).
+   * Used by per-stage routing (e.g. a cheaper model for analysis, a stronger
+   * model for the Judge). Optional — providers that cannot swap models may
+   * omit it and the router falls back to the default provider.
+   */
+  withModel?(model: string): ModelProvider;
 }

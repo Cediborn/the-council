@@ -1,18 +1,21 @@
 import {
   AGENTS,
   ANALYTICAL_AGENTS,
-  selectQuickAgents,
+  buildClassificationContext,
+  classifyQuestion,
   labelForStance,
+  selectQuickAgents,
 } from "./agents";
 import { parseJsonObject, unwrapNestedObject, validate } from "./parse";
 import {
   agentAnalysisSchema,
   comparisonSchema,
   devilsAdvocateSchema,
+  reassessmentSchema,
   verdictSchema,
 } from "./schemas";
-import { resolveProvider } from "./providers";
-import type { ModelProvider, ProviderChatInput } from "./providers";
+import { resolveProviderForStage } from "./providers";
+import type { ModelProvider, ProviderChatInput, ProviderStage } from "./providers";
 import { recordUsage } from "./usage";
 import type {
   AgentAnalysis,
@@ -23,20 +26,31 @@ import type {
   CouncilUsage,
   CouncilVerdict,
   DevilAdvocateAnalysis,
+  QuestionClassification,
+  ReassessmentAnalysis,
 } from "./types";
 
 /**
- * COUNCIL orchestrator.
+ * COUNCIL V0.2 orchestrator.
  *
  * Pipeline by mode:
  *   QUICK: 3 analytical agents (selected by question) → Judge
  *   FULL:  all 4 analytical agents → comparison → Judge
- *   DEEP:  all 4 analytical agents → comparison → Devil's Advocate → Judge
+ *   DEEP:  all 4 analytical agents → comparison → Devil's Advocate
+ *          → Reassessment → Judge
  *
- * Independence: analytical agents receive ONLY the question + their role —
- * never each other's answers. Comparison happens after all are complete.
- * Agents run concurrently. A single agent failure does NOT crash the Council:
- * the Judge is told an agent failed and must reduce confidence accordingly.
+ * Every question is classified first (type + capabilities). That
+ * classification is injected into every agent prompt so the agents know what
+ * kind of question they are answering (Part 6/7/8).
+ *
+ * Independence: analytical agents receive ONLY the question + classification +
+ * their role — never each other's answers. Comparison happens after all are
+ * complete. Agents run concurrently. A single agent failure does NOT crash the
+ * Council: the Judge is told an agent failed and must reduce confidence.
+ *
+ * The Judge NEVER votes. If the Judge fails, the Council does NOT count
+ * stances — it returns an explicitly degraded INSUFFICIENT_INFORMATION
+ * verdict (Part 11).
  *
  * Implementation note: the pipeline runs inside a "pump" task that pushes
  * events into a shared queue; the async generator drains the queue. This keeps
@@ -58,7 +72,16 @@ const ANALYSIS_KEYS = [
   "missingInformation",
   "confidence",
 ];
-const COMPARISON_KEYS = ["agreements", "disagreements", "sharedAssumptions", "stanceCounts"];
+const COMPARISON_KEYS = [
+  "agreements",
+  "disagreements",
+  "contradictions",
+  "sharedAssumptions",
+  "missingInformation",
+  "risks",
+  "uniqueInsights",
+  "stanceCounts",
+];
 const DEVILS_ADVOCATE_KEYS = [
   "summary",
   "strongestArgument",
@@ -67,6 +90,13 @@ const DEVILS_ADVOCATE_KEYS = [
   "convergenceWarning",
   "minorityPoint",
   "evidenceThatWouldResolve",
+];
+const REASSESSMENT_KEYS = [
+  "summary",
+  "hardened",
+  "weakened",
+  "positionChanges",
+  "judgeGuidance",
 ];
 const VERDICT_KEYS = [
   "verdict",
@@ -82,6 +112,7 @@ const VERDICT_KEYS = [
   "recommendedAction",
   "whatWouldChangeTheVerdict",
   "reasoning",
+  "whyThisVerdictWon",
 ];
 
 export interface CouncilRunOptions {
@@ -89,6 +120,8 @@ export interface CouncilRunOptions {
   question: string;
   provider?: ModelProvider;
   signal?: AbortSignal;
+  /** V0.2: stable session id (Part 18). Generated when omitted. */
+  sessionId?: string;
 }
 
 export class CouncilRunError extends Error {
@@ -96,6 +129,7 @@ export class CouncilRunError extends Error {
     message: string,
     public readonly analyses: AgentAnalysis[],
     public readonly devilsAdvocate: DevilAdvocateAnalysis | null,
+    public readonly reassessment: ReassessmentAnalysis | null,
   ) {
     super(message);
     this.name = "CouncilRunError";
@@ -104,11 +138,31 @@ export class CouncilRunError extends Error {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+function makeSessionId(): string {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch {
+    // fall through
+  }
+  return `s-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<CouncilEvent> {
   const { mode, question, signal } = opts;
-  const provider = opts.provider ?? resolveProvider();
+  const sessionId = opts.sessionId ?? makeSessionId();
   const startedAt = Date.now();
+  const classification: QuestionClassification = classifyQuestion(question);
+
+  // Per-stage routing (Part 21) only applies when the caller did NOT inject a
+  // provider. An injected provider (tests, callers with a fixed model) wins
+  // for every stage.
+  const providerFor = (stage: ProviderStage): ModelProvider =>
+    opts.provider ?? resolveProviderForStage(stage);
+  const provider = providerFor("analysis");
   const usage: CouncilUsage = {
+    sessionId,
     mode,
     agentCalls: 0,
     failedAgentCalls: 0,
@@ -131,10 +185,22 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
 
   const pump = (async () => {
     try {
-      queue.push({ type: "convened", mode, agents: analyticalAgents, stage: "convened" });
+      queue.push({
+        type: "convened",
+        sessionId,
+        mode,
+        agents: analyticalAgents,
+        classification,
+        stage: "convened",
+      });
 
       // ── Stage 1: independent parallel analysis ────────────────────────────
+      // Resolve each stage's provider once (per-stage routing, Part 21) so the
+      // four concurrent analysts share one instance and usage stays accurate.
+      const analysisProvider = providerFor("analysis");
       const analyses = new Map<AgentKey, AgentAnalysis>();
+      const classificationContext = buildClassificationContext(classification);
+      const userPrompt = `Question: ${question}${classificationContext}`;
 
       const runAnalyst = async (agent: AgentKey): Promise<void> => {
         const def = AGENTS[agent];
@@ -155,11 +221,11 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
           const result = await callWithRetry(
             {
               system: `${def.system}\n\n${def.outputContract}`,
-              user: `Question: ${question}`,
+              user: userPrompt,
               temperature: 0.5,
               maxTokens: MAX_ANALYSIS_TOKENS,
             },
-            provider,
+            analysisProvider,
             signal,
           );
           usage.inputTokens += result.usage.inputTokens;
@@ -213,50 +279,86 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
           "Every analytical agent failed. The model provider may be unreachable.",
           completedAnalyses,
           null,
+          null,
         );
       }
 
       // If the client disconnected, stop before making further model calls.
-      const bailIfAborted = (da: DevilAdvocateAnalysis | null) => {
+      const bailIfAborted = (
+        da: DevilAdvocateAnalysis | null,
+        reassessment: ReassessmentAnalysis | null,
+      ) => {
         if (signal?.aborted) {
-          throw new CouncilRunError("Council cancelled.", completedAnalyses, da);
+          throw new CouncilRunError("Council cancelled.", completedAnalyses, da, reassessment);
         }
       };
-      bailIfAborted(null);
+      bailIfAborted(null, null);
 
       // ── Stage 2: comparison (FULL + DEEP only) ────────────────────────────
       let comparison: CouncilComparison | null = null;
       if (mode !== "QUICK") {
+        const comparisonProvider = providerFor("comparison");
         queue.push({ type: "stage", stage: "comparing" });
-        comparison = await runComparison(completedAnalyses, question, provider, signal, usage);
+        comparison = await runComparison(
+          completedAnalyses,
+          question,
+          classification,
+          comparisonProvider,
+          signal,
+          usage,
+        );
         queue.push({ type: "comparison", comparison, stage: "comparing" });
-        bailIfAborted(null);
+        bailIfAborted(null, null);
       }
 
       // ── Stage 3: Devil's Advocate (DEEP only) ─────────────────────────────
       let devilsAdvocate: DevilAdvocateAnalysis | null = null;
       if (mode === "DEEP") {
+        const daProvider = providerFor("devils_advocate");
         queue.push({ type: "stage", stage: "devils_advocate" });
         devilsAdvocate = await runDevilsAdvocate(
           completedAnalyses,
           comparison,
           question,
-          provider,
+          classification,
+          daProvider,
           signal,
           usage,
         );
         queue.push({ type: "da:done", analysis: devilsAdvocate, stage: "devils_advocate" });
-        bailIfAborted(devilsAdvocate);
+        bailIfAborted(devilsAdvocate, null);
       }
 
-      // ── Stage 4: the Judge ────────────────────────────────────────────────
+      // ── Stage 4: Reassessment (DEEP only) — V0.2 (Part 12) ───────────────
+      let reassessment: ReassessmentAnalysis | null = null;
+      if (mode === "DEEP" && devilsAdvocate && !devilsAdvocate.failed) {
+        const reassessmentProvider = providerFor("reassessment");
+        queue.push({ type: "stage", stage: "reassessing" });
+        reassessment = await runReassessment(
+          completedAnalyses,
+          comparison,
+          devilsAdvocate,
+          question,
+          classification,
+          reassessmentProvider,
+          signal,
+          usage,
+        );
+        queue.push({ type: "reassessment:done", analysis: reassessment, stage: "reassessing" });
+        bailIfAborted(devilsAdvocate, reassessment);
+      }
+
+      // ── Stage 5: the Judge ────────────────────────────────────────────────
+      const judgeProvider = providerFor("judge");
       queue.push({ type: "stage", stage: "judging" });
       const verdict = await runJudge(
         completedAnalyses,
         comparison,
         devilsAdvocate,
+        reassessment,
         question,
-        provider,
+        classification,
+        judgeProvider,
         signal,
         usage,
       );
@@ -352,10 +454,47 @@ function formatComparison(comparison: CouncilComparison | null): string {
           .join("\n"),
     );
   }
+  if (comparison.contradictions.length) {
+    parts.push(
+      "CONTRADICTIONS: " +
+        comparison.contradictions
+          .map((c) => `${c.topic}: ${c.summary}`)
+          .join("\n"),
+    );
+  }
   if (comparison.sharedAssumptions.length) {
     parts.push("SHARED ASSUMPTIONS: " + comparison.sharedAssumptions.join("; "));
   }
+  if (comparison.missingInformation.length) {
+    parts.push("MISSING INFORMATION: " + comparison.missingInformation.join("; "));
+  }
+  if (comparison.risks.length) {
+    parts.push("RISKS: " + comparison.risks.join("; "));
+  }
+  if (comparison.uniqueInsights.length) {
+    parts.push("UNIQUE INSIGHTS: " + comparison.uniqueInsights.join("; "));
+  }
   return parts.join("\n") || "(no explicit agreements or disagreements identified)";
+}
+
+function formatReassessment(reassessment: ReassessmentAnalysis | null): string {
+  if (!reassessment) return "";
+  if (reassessment.failed) return "\nReassessment FAILED (no response).\n";
+  const parts = [
+    `\nReassessment after stress-test:\n${reassessment.summary}`,
+  ];
+  if (reassessment.hardened.length) parts.push(`Hardened: ${reassessment.hardened.join("; ")}`);
+  if (reassessment.weakened.length) parts.push(`Weakened: ${reassessment.weakened.join("; ")}`);
+  if (reassessment.positionChanges.length) {
+    parts.push(
+      "Position changes: " +
+        reassessment.positionChanges
+          .map((p) => `${p.agent}: ${p.from} → ${p.to}`)
+          .join(" | "),
+    );
+  }
+  if (reassessment.judgeGuidance) parts.push(`Judge guidance: ${reassessment.judgeGuidance}`);
+  return parts.join("\n");
 }
 
 function stanceCounts(analyses: AgentAnalysis[]): CouncilComparison["stanceCounts"] {
@@ -376,6 +515,7 @@ function stanceCounts(analyses: AgentAnalysis[]): CouncilComparison["stanceCount
 async function runComparison(
   analyses: AgentAnalysis[],
   question: string,
+  classification: QuestionClassification,
   provider: ModelProvider,
   signal: AbortSignal | undefined,
   usage: CouncilUsage,
@@ -384,7 +524,11 @@ async function runComparison(
   const fallback = (): CouncilComparison => ({
     agreements: [],
     disagreements: [],
+    contradictions: [],
     sharedAssumptions: [],
+    missingInformation: [],
+    risks: [],
+    uniqueInsights: [],
     stanceCounts: stanceCounts(analyses),
   });
 
@@ -392,7 +536,7 @@ async function runComparison(
     const result = await callWithRetry(
       {
         system: `${def.system}\n\n${def.outputContract}`,
-        user: `Question: ${question}\n\nIndependent analyses:\n${formatAnalysesForJudge(analyses)}`,
+        user: `Question: ${question}${buildClassificationContext(classification)}\n\nIndependent analyses:\n${formatAnalysesForJudge(analyses)}`,
         temperature: 0.3,
         maxTokens: MAX_ANALYSIS_TOKENS,
       },
@@ -411,7 +555,11 @@ async function runComparison(
     return {
       agreements: parsed.data.agreements,
       disagreements: parsed.data.disagreements,
+      contradictions: parsed.data.contradictions,
       sharedAssumptions: parsed.data.sharedAssumptions,
+      missingInformation: parsed.data.missingInformation,
+      risks: parsed.data.risks,
+      uniqueInsights: parsed.data.uniqueInsights,
       stanceCounts: {
         SUPPORT: 0,
         OPPOSE: 0,
@@ -431,6 +579,7 @@ async function runDevilsAdvocate(
   analyses: AgentAnalysis[],
   comparison: CouncilComparison | null,
   question: string,
+  classification: QuestionClassification,
   provider: ModelProvider,
   signal: AbortSignal | undefined,
   usage: CouncilUsage,
@@ -452,7 +601,7 @@ async function runDevilsAdvocate(
     const result = await callWithRetry(
       {
         system: `${def.system}\n\n${def.outputContract}`,
-        user: `Question: ${question}\n\nIndependent analyses:\n${formatAnalysesForJudge(analyses)}\n\nComparison:\n${formatComparison(comparison)}`,
+        user: `Question: ${question}${buildClassificationContext(classification)}\n\nIndependent analyses:\n${formatAnalysesForJudge(analyses)}\n\nComparison:\n${formatComparison(comparison)}`,
         temperature: 0.4,
         maxTokens: MAX_ANALYSIS_TOKENS,
       },
@@ -487,42 +636,99 @@ async function runDevilsAdvocate(
   }
 }
 
+async function runReassessment(
+  analyses: AgentAnalysis[],
+  comparison: CouncilComparison | null,
+  devilsAdvocate: DevilAdvocateAnalysis,
+  question: string,
+  classification: QuestionClassification,
+  provider: ModelProvider,
+  signal: AbortSignal | undefined,
+  usage: CouncilUsage,
+): Promise<ReassessmentAnalysis> {
+  const def = AGENTS.reassessor;
+  const base: ReassessmentAnalysis = {
+    summary: "",
+    hardened: [],
+    weakened: [],
+    positionChanges: [],
+    judgeGuidance: "",
+  };
+
+  try {
+    const result = await callWithRetry(
+      {
+        system: `${def.system}\n\n${def.outputContract}`,
+        user: `Question: ${question}${buildClassificationContext(classification)}\n\nIndependent analyses:\n${formatAnalysesForJudge(analyses)}\n\nComparison:\n${formatComparison(comparison)}\n\nDevil's Advocate stress-test:\n${formatDevilsAdvocateForJudge(devilsAdvocate)}`,
+        temperature: 0.4,
+        maxTokens: MAX_ANALYSIS_TOKENS,
+      },
+      provider,
+      signal,
+    );
+    usage.inputTokens += result.usage.inputTokens;
+    usage.outputTokens += result.usage.outputTokens;
+    usage.agentCalls += 1;
+
+    const parsed = validate(
+      reassessmentSchema,
+      unwrapNestedObject(parseJsonObject(result.content), "summary", REASSESSMENT_KEYS),
+    );
+    if (!parsed.ok) {
+      return { ...base, summary: result.content.trim(), degraded: true, retries: result.retries };
+    }
+    return {
+      summary: parsed.data.summary,
+      hardened: parsed.data.hardened,
+      weakened: parsed.data.weakened,
+      positionChanges: parsed.data.positionChanges,
+      judgeGuidance: parsed.data.judgeGuidance,
+      retries: result.retries,
+    };
+  } catch (err) {
+    usage.failedAgentCalls += 1;
+    return { ...base, failed: true, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function formatDevilsAdvocateForJudge(da: DevilAdvocateAnalysis): string {
+  if (da.failed) return "Devil's Advocate FAILED (no response).";
+  return [
+    da.summary,
+    `Strongest argument: ${da.strongestArgument}`,
+    `Attempt to break it: ${da.attemptToBreakIt}`,
+    `Unsupported assumptions: ${da.unsupportedAssumptions.join("; ") || "none"}`,
+    `Convergence warning: ${da.convergenceWarning || "none"}`,
+    `Minority point: ${da.minorityPoint || "none"}`,
+    `Evidence that would resolve: ${da.evidenceThatWouldResolve.join("; ") || "none"}`,
+  ].join("\n");
+}
+
 /**
  * Safe fallback verdict — used ONLY when the model cannot produce a valid
  * verdict even after retries, or the Judge call itself fails. It is honest
- * about being degraded and never fabricates confidence.
+ * about being degraded and NEVER counts stances (Part 11): the Council does
+ * not vote, and a broken Judge is not a reason to fabricate a verdict.
  */
-function fallbackVerdict(analyses: AgentAnalysis[], failedCount: number): CouncilVerdict {
-  const live = analyses.filter((a) => !a.failed);
-  const supports = live.filter((a) => a.stance === "SUPPORT").length;
-  const opposes = live.filter((a) => a.stance === "OPPOSE").length;
-  const conditional = live.filter((a) => a.stance === "CONDITIONAL").length;
-  const total = Math.max(1, live.length);
-  const supportRatio = supports / total;
-
-  let verdict: CouncilVerdict["verdict"] = "INSUFFICIENT_INFORMATION";
-  if (opposes > supports) verdict = "RECONSIDER";
-  else if (supportRatio >= 0.66 && conditional === 0) verdict = "BUILD";
-  else if (supportRatio >= 0.5) verdict = "REFINE";
-
+function fallbackVerdict(analyses: AgentAnalysis[]): CouncilVerdict {
+  const failedCount = analyses.filter((a) => a.failed).length;
   return {
-    verdict,
-    score: Math.round(supportRatio * 100) / 10,
-    confidence: Math.max(0, 40 - failedCount * 15),
-    summary: `The Judge could not produce a fully structured verdict after repeated attempts${failedCount > 0 ? ` (${failedCount} agent(s) failed)` : ""}. This is a degraded, automatically derived verdict based only on the surviving agents' stated stances.`,
-    strongestArgumentFor:
-      live.find((a) => a.stance === "SUPPORT" || a.stance === "CONDITIONAL")?.keyPoints[0] ??
-      "None of the surviving agents supported the proposal.",
-    strongestArgumentAgainst:
-      live.find((a) => a.stance === "OPPOSE")?.keyPoints[0] ??
-      "None of the surviving agents opposed the proposal.",
+    verdict: "INSUFFICIENT_INFORMATION",
+    score: 0,
+    confidence: Math.max(0, 30 - failedCount * 10),
+    summary: `The Council could not complete its final evaluation — the Judge failed to produce a structured verdict${
+      failedCount > 0 ? ` and ${failedCount} analytical agent(s) also failed` : ""
+    }. No verdict is fabricated from the surviving stances.`,
+    strongestArgumentFor: analyses.find((a) => !a.failed)?.keyPoints[0] ?? "Unknown.",
+    strongestArgumentAgainst: "Unknown — the Council could not weigh the arguments.",
     keyAgreements: [],
     keyDisagreements: [],
     criticalAssumptions: [],
     criticalRisks: [],
     recommendedAction: "Retry the Council, or check that the model provider is healthy.",
     whatWouldChangeTheVerdict: ["A working Judge response."],
-    reasoning: "Degraded fallback — see summary.",
+    reasoning: "Degraded fallback — the Judge did not respond with a valid verdict.",
+    whyThisVerdictWon: "No argument won: this is an explicitly degraded result, not a judgment.",
     degraded: true,
   };
 }
@@ -531,7 +737,9 @@ async function runJudge(
   analyses: AgentAnalysis[],
   comparison: CouncilComparison | null,
   devilsAdvocate: DevilAdvocateAnalysis | null,
+  reassessment: ReassessmentAnalysis | null,
   question: string,
+  classification: QuestionClassification,
   provider: ModelProvider,
   signal: AbortSignal | undefined,
   usage: CouncilUsage,
@@ -539,10 +747,9 @@ async function runJudge(
   const def = AGENTS.judge;
   const failedCount = analyses.filter((a) => a.failed).length;
   const daSection = devilsAdvocate
-    ? devilsAdvocate.failed
-      ? "Devil's Advocate FAILED (no response).\n"
-      : `Devil's Advocate stress-test:\n${devilsAdvocate.summary}\nStrongest argument: ${devilsAdvocate.strongestArgument}\nAttempt to break it: ${devilsAdvocate.attemptToBreakIt}\nUnsupported assumptions: ${devilsAdvocate.unsupportedAssumptions.join("; ") || "none"}\nConvergence warning: ${devilsAdvocate.convergenceWarning || "none"}\nMinority point: ${devilsAdvocate.minorityPoint || "none"}\nEvidence that would resolve: ${devilsAdvocate.evidenceThatWouldResolve.join("; ") || "none"}\n`
+    ? `\nDevil's Advocate:\n${formatDevilsAdvocateForJudge(devilsAdvocate)}\n`
     : "";
+  const reassessmentSection = reassessment ? formatReassessment(reassessment) : "";
 
   const failedNote =
     failedCount > 0
@@ -553,7 +760,7 @@ async function runJudge(
     const result = await callWithRetry(
       {
         system: `${def.system}\n\n${def.outputContract}`,
-        user: `Question: ${question}\n\nIndependent analyses:\n${formatAnalysesForJudge(analyses)}\n\nComparison:\n${formatComparison(comparison)}${daSection}${failedNote}`,
+        user: `Question: ${question}${buildClassificationContext(classification)}\n\nIndependent analyses:\n${formatAnalysesForJudge(analyses)}\n\nComparison:\n${formatComparison(comparison)}${daSection}${reassessmentSection}${failedNote}`,
         temperature: 0.3,
         maxTokens: MAX_VERDICT_TOKENS,
       },
@@ -569,15 +776,22 @@ async function runJudge(
       unwrapNestedObject(parseJsonObject(result.content), "summary", VERDICT_KEYS),
     );
     if (!parsed.ok) {
-      return fallbackVerdict(analyses, failedCount);
+      return fallbackVerdict(analyses);
     }
-    return { ...parsed.data, degraded: false };
+    return {
+      ...parsed.data,
+      whyThisVerdictWon:
+        parsed.data.whyThisVerdictWon.trim() !== ""
+          ? parsed.data.whyThisVerdictWon
+          : parsed.data.reasoning,
+      degraded: false,
+    };
   } catch (err) {
     usage.failedAgentCalls += 1;
     if (signal?.aborted) {
-      throw new CouncilRunError("Council cancelled.", analyses, devilsAdvocate);
+      throw new CouncilRunError("Council cancelled.", analyses, devilsAdvocate, reassessment);
     }
-    return fallbackVerdict(analyses, failedCount);
+    return fallbackVerdict(analyses);
   }
 }
 

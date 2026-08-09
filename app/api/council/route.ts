@@ -50,10 +50,15 @@ export async function POST(req: Request) {
       req.signal.addEventListener("abort", onAbort);
 
       try {
+        const sessionId =
+          typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+            ? crypto.randomUUID()
+            : `s-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         for await (const event of runCouncil({
           mode: parsed.mode,
           question: parsed.question,
           signal: abortController.signal,
+          sessionId,
         })) {
           send(event);
         }

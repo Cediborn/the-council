@@ -19,7 +19,8 @@ const point = z.string().min(1).max(600);
  */
 const stringList = (max: number) =>
   z.preprocess((v) => {
-    if (typeof v === "string") return v.trim().length > 0 ? [v] : v;
+    if (v === null || v === undefined) return [];
+    if (typeof v === "string") return v.trim().length > 0 ? [v] : [];
     if (isPlainRecord(v)) {
       const values = Object.values(v)
         .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
@@ -53,7 +54,7 @@ export const agentAnalysisSchema = z.object({
   confidence: z.number().min(0).max(100).default(50),
 });
 
-/** Comparison stage (FULL + DEEP). */
+/** Comparison stage (FULL + DEEP) — V0.2 is richer (Part 13). */
 export const comparisonSchema = z.object({
   agreements: z
     .array(
@@ -78,7 +79,14 @@ export const comparisonSchema = z.object({
     )
     .max(6)
     .default([]),
+  contradictions: z
+    .array(z.object({ topic: point, summary: point }))
+    .max(6)
+    .default([]),
   sharedAssumptions: stringList(6),
+  missingInformation: stringList(6),
+  risks: stringList(6),
+  uniqueInsights: stringList(6),
   stanceCounts: z
     .object({
       SUPPORT: z.number().int().min(0).default(0),
@@ -89,6 +97,24 @@ export const comparisonSchema = z.object({
     })
     .partial()
     .default({}),
+});
+
+/** Reassessment (DEEP only, after Devil's Advocate) — V0.2 (Part 12). */
+export const reassessmentSchema = z.object({
+  summary: nonEmptyString,
+  hardened: stringList(6),
+  weakened: stringList(6),
+  positionChanges: z
+    .array(
+      z.object({
+        agent: z.string().min(1).max(60),
+        from: z.string().min(1).max(30),
+        to: z.string().min(1).max(30),
+      }),
+    )
+    .max(6)
+    .default([]),
+  judgeGuidance: nonEmptyString,
 });
 
 /** Devil's Advocate (DEEP). */
@@ -102,7 +128,7 @@ export const devilsAdvocateSchema = z.object({
   evidenceThatWouldResolve: stringList(6),
 });
 
-/** The Judge's strict verdict schema — mirrors the spec section 11. */
+/** The Judge's strict verdict schema — mirrors the spec section 11 + Part 14. */
 export const verdictSchema = z.object({
   verdict: z.enum(VERDICT_CATEGORIES as [CouncilVerdict["verdict"], ...CouncilVerdict["verdict"][]]),
   score: z.number().min(0).max(10),
@@ -117,6 +143,9 @@ export const verdictSchema = z.object({
   recommendedAction: nonEmptyString,
   whatWouldChangeTheVerdict: stringList(8),
   reasoning: nonEmptyString,
+  // Small models sometimes omit this; fall back to the reasoning text so the
+  // verdict stays complete and honest.
+  whyThisVerdictWon: z.string().max(1200).default(""),
 });
 
 /** Incoming API request body. */
@@ -129,3 +158,4 @@ export type ParsedVerdict = z.infer<typeof verdictSchema>;
 export type ParsedAgentAnalysis = z.infer<typeof agentAnalysisSchema>;
 export type ParsedComparison = z.infer<typeof comparisonSchema>;
 export type ParsedDevilsAdvocate = z.infer<typeof devilsAdvocateSchema>;
+export type ParsedReassessment = z.infer<typeof reassessmentSchema>;

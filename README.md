@@ -1,4 +1,4 @@
-# COUNCIL — V0.1
+# COUNCIL — V0.2
 
 A general-purpose, multi-agent **deliberation engine**. Ask it anything —
 everyday decisions, school questions, business ideas, code questions, life
@@ -10,24 +10,32 @@ COUNCIL is designed to optimize for **decision quality and truthfulness, not
 user satisfaction**. It will tell you when you're wrong, when an idea is
 weak, or when there simply isn't enough information.
 
-## What V0.1 does
+## What V0.2 does
 
 1. You enter **any** question.
 2. You pick a mode: **Quick**, **Full**, or **Deep**.
-3. The Council convenes — real, separate model calls per agent, running
+3. The Council classifies the question (type + capabilities) and picks the
+   relevant agents — Quick selects the 3 best-fit perspectives, Full and Deep
+   run all four with the classification injected into every prompt.
+4. The Council convenes — real, separate model calls per agent, running
    concurrently, never seeing each other's answers during the first round.
-4. You watch the actual deliberation stages stream by.
-5. You receive a structured verdict (score, confidence, strongest arguments,
-   agreements, disagreements, assumptions, risks, recommended action) plus
-   each agent's expandable analysis.
+5. You watch the actual deliberation stages stream by — including the
+   Deep-mode Reassessment after the Devil's Advocate stress-test.
+6. You receive a structured verdict (score, confidence, strongest arguments,
+   agreements, disagreements, contradictions, risks, assumptions, why this
+   verdict won, recommended action) plus each agent's expandable analysis.
+7. If anything fails mid-run — network drop, provider down, a hung model —
+   the Council stays usable: completed analyses are preserved, the cause is
+   explained, and you can retry or start fresh. **No page refresh is ever
+   required to recover** (V0.2's headline reliability fix).
 
 ## Modes
 
 | Mode | Pipeline |
 | --- | --- |
-| **Quick** | 3 analytical agents (chosen for the question) → Judge |
+| **Quick** | 3 analytical agents (selected by question type) → Judge |
 | **Full** | Reasoner + Skeptic + Practicalist + Perspective → comparison → Judge |
-| **Deep** | all four → comparison → Devil's Advocate stress-test → Judge |
+| **Deep** | all four → comparison → Devil's Advocate stress-test → Reassessment → Judge |
 
 The four analytical agents:
 
@@ -39,6 +47,39 @@ The four analytical agents:
 The **Judge** does not vote. It weighs argument quality — a strong minority
 argument can outweigh a weak majority. Verdicts: `BUILD`, `REFINE`,
 `VALIDATE`, `RECONSIDER`, `REJECT`, `INSUFFICIENT_INFORMATION`.
+
+## V0.2 changes
+
+- **Reliability (headline).** A failed Council session can never leave the
+  UI stuck: every phase resolves to success, failure, or cancellation, and
+  after any error the app shows *why* it failed (e.g. "make sure Ollama is
+  running") with **Try again** and **New question** — no browser refresh.
+- **Cancellation.** A Cancel button aborts the request, stops streaming,
+  cleans up listeners, and lets you immediately ask something else.
+- **Question classifier.** Every question is classified into a type
+  (decision, mathematical, technical, comparison, business, planning,
+  educational, creative, argument, explanation, general) with an ordered
+  capability profile. Quick mode picks the 3 agents whose capabilities fit
+  best; all modes inject the classification into every agent prompt.
+- **Deep mode is deeper.** After the Devil's Advocate stress-test, a
+  Reassessment stage re-evaluates which arguments hardened, which weakened,
+  and which positions changed — the Judge sees all of it.
+- **The Judge never counts votes.** If the Judge fails, the Council returns
+  an explicitly degraded `INSUFFICIENT_INFORMATION` verdict instead of
+  deriving a verdict from stance counts. The verdict now also states **why
+  this verdict won**.
+- **Richer comparison.** Contradictions, missing information, risks, and
+  unique insights are extracted alongside agreements and disagreements.
+- **Sessions.** Every run has a session id and is recorded client-side
+  (question, mode, status, completed agents, verdict, errors) — the
+  foundation for future history and the Challenge flow.
+- **Per-stage model routing.** Stages can be pinned to different models via
+  `COUNCIL_MODEL_ANALYSIS`, `COUNCIL_MODEL_COMPARISON`,
+  `COUNCIL_MODEL_DEVILS_ADVOCATE`, `COUNCIL_MODEL_REASSESSMENT`, and
+  `COUNCIL_MODEL_JUDGE` env vars. Timeouts are configurable via
+  `COUNCIL_TIMEOUT_MS`.
+- **Sturdier parsing.** Empty-string, null, and string-wrapped JSON list
+  fields no longer degrade a whole agent — the parser now handles them.
 
 ## Getting started
 
@@ -101,21 +142,24 @@ app/
   page.tsx                    # Council screen
   api/council/route.ts        # SSE endpoint — streams real pipeline events
 components/council/
-  CouncilApp.tsx              # input → deliberation → verdict state machine
+  CouncilApp.tsx              # phase state machine: idle → run → verdict/error/cancelled
   QuestionScreen.tsx          # question, mode picker, Convene button
-  DeliberationPanel.tsx       # live stage visualization
-  VerdictView.tsx             # verdict card + expandable analyses
+  DeliberationPanel.tsx       # live stage visualization + Cancel
+  VerdictView.tsx             # verdict card + expandable analyses + disagreement view
   ChallengeButton.tsx         # [Challenge the Council] — later version
   icons.tsx                   # hand-drawn SVG icons — no emojis
 lib/council/
-  agents.ts                   # agent registry + role prompts + Quick selection
-  orchestrator.ts             # the pipeline: parallel analysis → compare → DA → judge
+  agents.ts                   # agent registry + classifier (type/capabilities) + selection
+  orchestrator.ts             # pipeline: classify → analyze → compare → DA → reassess → judge
   schemas.ts                  # Zod validation for every model output
   parse.ts                    # safe JSON extraction + graceful fallback
-  providers/                  # model router: ollama | openai-compatible
+  providers/                  # model router: ollama | openai-compatible | per-stage
   usage.ts                    # per-session cost/usage tracking (future tiers)
-lib/client/useCouncil.ts      # client SSE consumer
-tests/                        # unit tests (schemas, parsing, orchestrator)
+lib/client/
+  councilState.ts             # pure session state machine (testable, no React)
+  useCouncil.ts               # SSE consumer wired to the state machine
+lib/council/types.ts          # domain types: classification, comparison, verdict, events
+tests/                        # unit tests (schemas, parsing, orchestrator, state machine)
 ```
 
 ## Design notes

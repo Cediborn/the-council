@@ -15,6 +15,7 @@ import {
   EyeIcon,
   HourglassIcon,
   PedestalIcon,
+  RotateIcon,
   ShieldIcon,
   SparkIcon,
   WrenchIcon,
@@ -319,6 +320,11 @@ function DevilsAdvocateCard({
   );
 }
 
+/**
+ * Disagreement visualization (Part 15) — the Council's position made visible:
+ * support/oppose counts, the main disagreement, and a per-agent breakdown of
+ * who stands where and why.
+ */
 function AgreementSummary({ events }: { events: CouncilEvent[] }) {
   const comparison = events.findLast((e) => e.type === "comparison");
   if (!comparison) return null;
@@ -326,22 +332,59 @@ function AgreementSummary({ events }: { events: CouncilEvent[] }) {
   const { agreements, disagreements, stanceCounts } = comparison.comparison;
   const supports = stanceCounts.SUPPORT ?? 0;
   const opposes = stanceCounts.OPPOSE ?? 0;
-  const total = supports + opposes + (stanceCounts.CONDITIONAL ?? 0) + (stanceCounts.NEUTRAL ?? 0) + (stanceCounts.INSUFFICIENT ?? 0);
+  const conditional = stanceCounts.CONDITIONAL ?? 0;
+  const total = supports + opposes + conditional + (stanceCounts.NEUTRAL ?? 0) + (stanceCounts.INSUFFICIENT ?? 0);
 
   if (total === 0) return null;
 
   const mainDisagreement = disagreements[0]?.topic ?? null;
 
+  // Per-agent stance attribution (Part 15): who stands where and why.
+  const analyses = events
+    .filter((e): e is Extract<CouncilEvent, { type: "agent:done" }> => e.type === "agent:done")
+    .map((e) => e.analysis)
+    .filter((a) => !a.failed);
+
   return (
     <div className="rounded-xl border border-line bg-surface p-4 text-sm">
-      <p className="font-display text-xs font-bold uppercase tracking-widest text-ink-soft">The division</p>
+      <p className="font-display text-xs font-bold uppercase tracking-widest text-ink-soft">COUNCIL POSITION</p>
       <p className="mt-2 text-ink">
-        <span className="font-semibold text-mint">{supports}</span> perspective{supports === 1 ? "" : "s"} support this ·{" "}
-        <span className="font-semibold text-bad">{opposes}</span> strongly disagree
+        <span className="font-semibold text-mint">{supports}</span> support ·{" "}
+        <span className="font-semibold text-warn">{conditional}</span> conditional ·{" "}
+        <span className="font-semibold text-bad">{opposes}</span> oppose
         {disagreements.length > 0 && mainDisagreement && (
-          <> · main disagreement: <span className="font-semibold text-ink">{mainDisagreement}</span></>
+          <>
+            {" "}· main disagreement:{" "}
+            <span className="font-semibold text-ink">{mainDisagreement}</span>
+          </>
         )}
       </p>
+
+      {analyses.length > 0 && (
+        <ul className="mt-3 flex flex-col gap-1.5">
+          {analyses.map((a) => {
+            const stanceLabel = labelForStance(a.stance);
+            const tone =
+              a.stance === "SUPPORT"
+                ? "text-mint"
+                : a.stance === "OPPOSE"
+                  ? "text-bad"
+                  : a.stance === "CONDITIONAL"
+                    ? "text-warn"
+                    : "text-ink-soft";
+            const why = a.keyPoints[0] ?? a.summary;
+            return (
+              <li key={a.agent} className="flex gap-2 text-xs leading-relaxed">
+                <span className={`shrink-0 font-semibold ${tone}`}>{stanceLabel}:</span>
+                <span className="text-ink-soft">
+                  {a.name} — {why}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
       {disagreements.length > 0 && (
         <ul className="mt-2 flex flex-col gap-1">
           {disagreements.map((d, i) => (
@@ -350,6 +393,83 @@ function AgreementSummary({ events }: { events: CouncilEvent[] }) {
             </li>
           ))}
         </ul>
+      )}
+
+      {comparison.comparison.contradictions.length > 0 && (
+        <div className="mt-3 border-t border-line pt-3">
+          <p className="font-display text-[11px] font-bold uppercase tracking-widest text-bad">Contradictions</p>
+          <ul className="mt-1 flex flex-col gap-1">
+            {comparison.comparison.contradictions.map((c, i) => (
+              <li key={i} className="text-xs text-ink-soft">
+                {c.topic}: {c.summary}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** V0.2 comparison extras: missing info, risks, unique insights (Part 13). */
+function ComparisonExtras({ events }: { events: CouncilEvent[] }) {
+  const comparison = events.findLast((e) => e.type === "comparison");
+  if (!comparison) return null;
+  const c = comparison.comparison;
+  const hasAny =
+    c.missingInformation.length > 0 || c.risks.length > 0 || c.uniqueInsights.length > 0;
+  if (!hasAny) return null;
+  return (
+    <div className="mt-6 grid gap-3 sm:grid-cols-2">
+      <VerdictSection title="Missing information" items={c.missingInformation} dotClass="bg-info" />
+      <VerdictSection title="Key risks across analyses" items={c.risks} dotClass={SECTION_DOT.warn} />
+      {c.uniqueInsights.length > 0 && (
+        <VerdictSection title="Unique insights" items={c.uniqueInsights} dotClass="bg-achievement" />
+      )}
+    </div>
+  );
+}
+
+/** V0.2 DEEP-mode reassessment display (Part 12). */
+function ReassessmentCard({ events }: { events: CouncilEvent[] }) {
+  const ev = events.findLast((e) => e.type === "reassessment:done");
+  if (!ev) return null;
+  const r = ev.analysis;
+  if (r.failed) {
+    return (
+      <div className="rounded-xl border border-bad/30 bg-bad/5 p-4">
+        <p className="font-display text-sm font-semibold text-bad">Reassessment</p>
+        <p className="mt-1 text-xs text-ink-soft">Failed to respond. The Judge proceeded without the post-stress-test reassessment.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-xl border border-line bg-card p-4">
+      <div className="flex items-center gap-2">
+        <RotateIcon className="h-4 w-4 text-brand" />
+        <p className="font-display text-sm font-semibold text-ink">Reassessment after the stress-test</p>
+      </div>
+      <p className="mt-2 text-sm leading-relaxed text-ink">{r.summary}</p>
+      {r.hardened.length > 0 && (
+        <p className="mt-2 text-xs text-ink-soft">
+          <span className="font-semibold text-mint">Hardened:</span> {r.hardened.join("; ")}
+        </p>
+      )}
+      {r.weakened.length > 0 && (
+        <p className="mt-1 text-xs text-ink-soft">
+          <span className="font-semibold text-bad">Weakened:</span> {r.weakened.join("; ")}
+        </p>
+      )}
+      {r.positionChanges.length > 0 && (
+        <p className="mt-1 text-xs text-ink-soft">
+          <span className="font-semibold text-warn">Positions changed:</span>{" "}
+          {r.positionChanges.map((p) => `${p.agent} ${p.from} → ${p.to}`).join("; ")}
+        </p>
+      )}
+      {r.judgeGuidance && (
+        <p className="mt-2 rounded-lg bg-surface px-3 py-2 text-xs text-ink-soft">
+          <span className="font-semibold text-ink">Judge guidance:</span> {r.judgeGuidance}
+        </p>
       )}
     </div>
   );
@@ -436,12 +556,21 @@ export function VerdictView({
         <VerdictSection title="Critical risks" items={verdict.criticalRisks} dotClass={SECTION_DOT.warn} />
       </div>
 
+      <ComparisonExtras events={events} />
+
+      {usage.mode === "DEEP" && <ReassessmentCard events={events} />}
+
       <div className="mt-3 rounded-xl border border-line bg-surface p-4">
         <h3 className="font-display text-xs font-bold uppercase tracking-widest text-ink-soft">Recommended action</h3>
         <p className="mt-1.5 text-sm leading-relaxed text-ink">{verdict.recommendedAction}</p>
       </div>
 
       <VerdictSection title="What would change our mind" items={verdict.whatWouldChangeTheVerdict} dotClass={dot} />
+
+      <div className="mt-3 rounded-xl border border-line bg-surface p-4">
+        <h3 className="font-display text-xs font-bold uppercase tracking-widest text-ink-soft">Why this verdict won</h3>
+        <p className="mt-1.5 text-sm leading-relaxed text-ink">{verdict.whyThisVerdictWon}</p>
+      </div>
 
       <div className="mt-3 rounded-xl border border-line bg-surface p-4">
         <h3 className="font-display text-xs font-bold uppercase tracking-widest text-ink-soft">Reasoning</h3>

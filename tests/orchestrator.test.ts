@@ -52,6 +52,14 @@ const daJson = JSON.stringify({
   evidenceThatWouldResolve: ["evidence"],
 });
 
+const reassessmentJson = JSON.stringify({
+  summary: "the stress test hardened the core argument",
+  hardened: ["core feasibility argument"],
+  weakened: ["the demand assumption"],
+  positionChanges: [{ agent: "Skeptic", from: "OPPOSE", to: "CONDITIONAL" }],
+  judgeGuidance: "weigh feasibility more heavily",
+});
+
 const verdictJson = JSON.stringify({
   verdict: "BUILD",
   score: 8,
@@ -66,6 +74,7 @@ const verdictJson = JSON.stringify({
   recommendedAction: "Proceed with a pilot.",
   whatWouldChangeTheVerdict: ["new data"],
   reasoning: "Weighing evidence, the case is strong.",
+  whyThisVerdictWon: "The market-fit argument survived scrutiny.",
 });
 
 async function collect(events: AsyncGenerator<CouncilEvent>): Promise<CouncilEvent[]> {
@@ -144,11 +153,12 @@ describe("runCouncil — FULL mode", () => {
 });
 
 describe("runCouncil — DEEP mode", () => {
-  it("runs 4 analysts + comparison + devil's advocate + judge", async () => {
+  it("runs 4 analysts + comparison + devil's advocate + reassessment + judge", async () => {
     const provider = makeProvider((input) => {
       if (input.system.includes("JUDGE")) return verdictJson;
       if (input.system.includes("COMPARER")) return comparisonJson;
       if (input.system.includes("DEVIL'S ADVOCATE")) return daJson;
+      if (input.system.includes("REASSESSOR")) return reassessmentJson;
       return agentJson();
     });
     const events = await collect(
@@ -162,9 +172,32 @@ describe("runCouncil — DEEP mode", () => {
       expect(da.analysis.attemptToBreakIt).toBe("break");
     }
 
+    const reassessment = events.find((e) => e.type === "reassessment:done");
+    expect(reassessment?.type).toBe("reassessment:done");
+    if (reassessment?.type === "reassessment:done") {
+      expect(reassessment.analysis.hardened).toContain("core feasibility argument");
+      expect(reassessment.analysis.positionChanges[0].to).toBe("CONDITIONAL");
+    }
+
     const verdict = events.find((e) => e.type === "verdict");
     expect(verdict?.type).toBe("verdict");
-    if (verdict?.type === "verdict") expect(verdict.usage.agentCalls).toBe(7); // 4 + comparer + da + judge
+    if (verdict?.type === "verdict") expect(verdict.usage.agentCalls).toBe(8); // 4 + comparer + da + reassessor + judge
+  });
+
+  it("skips reassessment when the devil's advocate fails", async () => {
+    const provider = makeProvider((input) => {
+      if (input.system.includes("JUDGE")) return verdictJson;
+      if (input.system.includes("COMPARER")) return comparisonJson;
+      if (input.system.includes("DEVIL'S ADVOCATE")) throw new Error("da down");
+      return agentJson();
+    });
+    const events = await collect(
+      runCouncil({ mode: "DEEP", question: "Should I change careers?", provider }),
+    );
+    expect(events.some((e) => e.type === "da:done" && e.analysis.failed)).toBe(true);
+    expect(events.some((e) => e.type === "reassessment:done")).toBe(false);
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
   });
 });
 
@@ -210,10 +243,11 @@ describe("runCouncil — resilience", () => {
     }).rejects.toThrow(/Every analytical agent failed/);
   });
 
-  it("returns a degraded verdict when the judge returns prose", async () => {
+  it("never counts votes when the judge returns prose — returns INSUFFICIENT_INFORMATION", async () => {
     const provider = makeProvider((input) => {
       if (input.system.includes("JUDGE")) return "I think this is a fine idea overall, yes.";
       if (input.system.includes("COMPARER")) return comparisonJson;
+      // All agents support the idea — a vote count would say BUILD.
       return agentJson();
     });
     const events = await collect(
@@ -223,17 +257,14 @@ describe("runCouncil — resilience", () => {
     expect(verdict?.type).toBe("verdict");
     if (verdict?.type === "verdict") {
       expect(verdict.verdict.degraded).toBe(true);
-      // The fallback is still a valid verdict shape.
-      expect(["BUILD", "REFINE", "RECONSIDER", "INSUFFICIENT_INFORMATION"]).toContain(
-        verdict.verdict.verdict,
-      );
-      expect(verdict.verdict.score).toBeGreaterThanOrEqual(0);
-      expect(verdict.verdict.score).toBeLessThanOrEqual(10);
-      expect(verdict.verdict.confidence).toBeGreaterThanOrEqual(0);
+      // Part 11: the Council does not vote. A broken Judge cannot be replaced
+      // by stance counting — it yields INSUFFICIENT_INFORMATION, honestly.
+      expect(verdict.verdict.verdict).toBe("INSUFFICIENT_INFORMATION");
+      expect(verdict.verdict.reasoning).toMatch(/degraded/i);
     }
   });
 
-  it("returns a degraded verdict when the judge throws", async () => {
+  it("returns an explicitly degraded INSUFFICIENT_INFORMATION verdict when the judge throws", async () => {
     const provider = makeProvider((input) => {
       if (input.system.includes("JUDGE")) throw new Error("judge crash");
       if (input.system.includes("COMPARER")) return comparisonJson;
@@ -246,6 +277,7 @@ describe("runCouncil — resilience", () => {
     expect(verdict?.type).toBe("verdict");
     if (verdict?.type === "verdict") {
       expect(verdict.verdict.degraded).toBe(true);
+      expect(verdict.verdict.verdict).toBe("INSUFFICIENT_INFORMATION");
     }
   });
 

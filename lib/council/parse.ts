@@ -115,7 +115,18 @@ export function parseJsonObject(raw: string): unknown {
     if (seen.has(candidate)) continue;
     seen.add(candidate);
     try {
-      return JSON.parse(candidate);
+      const parsed: unknown = JSON.parse(candidate);
+      // The model sometimes wraps the whole object as a JSON-encoded STRING
+      // (e.g. "{\"summary\": ...}" instead of {"summary": ...}). Unwrap one
+      // level so the object is validated, not the string wrapper.
+      if (typeof parsed === "string" && parsed.trim().length > 0) {
+        try {
+          return JSON.parse(parsed.trim());
+        } catch {
+          return parsed;
+        }
+      }
+      return parsed;
     } catch {
       // continue
     }

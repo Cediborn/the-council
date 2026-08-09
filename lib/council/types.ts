@@ -6,6 +6,43 @@
 
 export type CouncilMode = "QUICK" | "FULL" | "DEEP";
 
+/**
+ * COUNCIL V0.2 — question taxonomy (Part 7).
+ * The classifier maps a question to ONE primary type plus an ordered list of
+ * capabilities the Council should emphasize. Capability-based, not
+ * character-based: premium characters later map onto the same capabilities.
+ */
+export type QuestionType =
+  | "decision"
+  | "explanation"
+  | "technical"
+  | "mathematical"
+  | "educational"
+  | "comparison"
+  | "business"
+  | "creative"
+  | "planning"
+  | "argument"
+  | "general";
+
+export type Capability =
+  | "logical_reasoning"
+  | "skepticism"
+  | "practical_analysis"
+  | "technical_analysis"
+  | "educational_explanation"
+  | "quantitative_reasoning"
+  | "strategic_reasoning"
+  | "risk_analysis"
+  | "alternative_perspectives";
+
+export interface QuestionClassification {
+  type: QuestionType;
+  label: string;
+  /** Ordered by relevance — the first entries matter most. */
+  capabilities: Capability[];
+}
+
 export type AgentKey =
   | "reasoner"
   | "skeptic"
@@ -13,6 +50,7 @@ export type AgentKey =
   | "perspective"
   | "devils_advocate"
   | "comparer"
+  | "reassessor"
   | "judge";
 
 export type VerdictCategory =
@@ -47,12 +85,38 @@ export interface AgentAnalysis {
   retries?: number;
 }
 
-/** Output of the comparison stage (FULL + DEEP). */
+/** Output of the comparison stage (FULL + DEEP) — V0.2 is richer (Part 13). */
 export interface CouncilComparison {
   agreements: { topic: string; agents: string[]; summary: string }[];
   disagreements: { topic: string; positions: { agent: string; position: string }[]; summary: string }[];
+  /** V0.2: where analyses directly contradict each other. */
+  contradictions: { topic: string; summary: string }[];
   sharedAssumptions: string[];
+  /** V0.2: what the analyses still need to know. */
+  missingInformation: string[];
+  /** V0.2: risks identified across analyses. */
+  risks: string[];
+  /** V0.2: insights only one agent surfaced. */
+  uniqueInsights: string[];
   stanceCounts: Record<Stance, number>;
+}
+
+/** Output of the Reassessment stage (DEEP only) — V0.2 (Part 12). */
+export interface ReassessmentAnalysis {
+  /** Short narrative of what the Devil's Advocate changed. */
+  summary: string;
+  /** Arguments that hardened after the stress-test. */
+  hardened: string[];
+  /** Arguments that weakened or collapsed. */
+  weakened: string[];
+  /** Positions that actually changed (agent → old → new). */
+  positionChanges: { agent: string; from: string; to: string }[];
+  /** What the Judge should weigh more heavily now. */
+  judgeGuidance: string;
+  failed?: boolean;
+  error?: string;
+  degraded?: boolean;
+  retries?: number;
 }
 
 /** Output of the Devil's Advocate stage (DEEP). */
@@ -87,11 +151,15 @@ export interface CouncilVerdict {
   recommendedAction: string;
   whatWouldChangeTheVerdict: string[];
   reasoning: string;
+  /** V0.2: the explicit "why this verdict won" statement (Part 14). */
+  whyThisVerdictWon: string;
   /** True when the model could not produce a valid verdict and we returned a safe fallback. */
   degraded?: boolean;
 }
 
 export interface CouncilUsage {
+  /** V0.2: stable id for this Council session (Part 18). */
+  sessionId: string;
   mode: CouncilMode;
   agentCalls: number;
   failedAgentCalls: number;
@@ -150,18 +218,27 @@ export type CouncilStage =
   | "analyzing"
   | "comparing"
   | "devils_advocate"
+  | "reassessing"
   | "judging"
   | "complete"
   | "failed";
 
 /** SSE events pushed to the client. */
 export type CouncilEvent =
-  | { type: "convened"; mode: CouncilMode; agents: AgentKey[]; stage: CouncilStage }
+  | {
+      type: "convened";
+      sessionId: string;
+      mode: CouncilMode;
+      agents: AgentKey[];
+      classification: QuestionClassification;
+      stage: CouncilStage;
+    }
   | { type: "agent:start"; agent: AgentKey; name: string; stage: "analyzing" }
   | { type: "agent:done"; analysis: AgentAnalysis; stage: "analyzing" }
-  | { type: "stage"; stage: "comparing" | "devils_advocate" | "judging" }
+  | { type: "stage"; stage: "comparing" | "devils_advocate" | "reassessing" | "judging" }
   | { type: "comparison"; comparison: CouncilComparison; stage: "comparing" }
   | { type: "da:done"; analysis: DevilAdvocateAnalysis; stage: "devils_advocate" }
+  | { type: "reassessment:done"; analysis: ReassessmentAnalysis; stage: "reassessing" }
   | { type: "verdict"; verdict: CouncilVerdict; usage: CouncilUsage; stage: "complete" }
   | {
       type: "error";

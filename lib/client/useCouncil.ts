@@ -1,17 +1,15 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import type { CouncilEvent, CouncilMode } from "@/lib/council/types";
+import {
+  councilReducer,
+  initialCouncilState,
+  isSessionActive,
+  type CouncilPhase,
+} from "./councilState";
 
-export type CouncilPhase = "idle" | "running" | "complete" | "error";
-
-export interface CouncilState {
-  phase: CouncilPhase;
-  error: string | null;
-  question: string;
-  mode: CouncilMode | null;
-  events: CouncilEvent[];
-}
+export type { CouncilPhase } from "./councilState";
 
 function isEvent(e: unknown): e is CouncilEvent {
   return (
@@ -22,48 +20,48 @@ function isEvent(e: unknown): e is CouncilEvent {
   );
 }
 
+/** A stable client id used until the server confirms its own session id. */
+function makeClientId(): string {
+  return `client-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 /**
  * Runs the Council by POSTing to /api/council and consuming the SSE stream.
- * Every stage event updates state as it arrives — the UI reflects the real
- * pipeline, never a fake timer.
+ *
+ * V0.2 reliability guarantees (Parts 1-5):
+ *  - Any failure (network, provider down, stream interrupted, server error,
+ *    malformed data) lands in the `error` phase with completed analyses
+ *    preserved — never a dead UI.
+ *  - `cancel()` aborts the request, stops streaming, and lets the user
+ *    immediately start another session.
+ *  - Duplicate submissions are ignored while a session is active.
+ *  - Abort + stream readers are cleaned up on unmount.
  */
 export function useCouncil() {
-  const [phase, setPhase] = useState<CouncilPhase>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [question, setQuestion] = useState("");
-  const [mode, setMode] = useState<CouncilMode | null>(null);
-  const [events, setEvents] = useState<CouncilEvent[]>([]);
+  const [state, dispatch] = useReducer(councilReducer, undefined, initialCouncilState);
   const abortRef = useRef<AbortController | null>(null);
+  const activeRunRef = useRef<{ controller: AbortController; runId: string } | null>(null);
+  // Keep a ref of state so `run` can check the phase without re-binding.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  // SYNCHRONOUS running flag (Part 17): the reducer guard alone is not enough
+  // because two clicks within the same render tick both read a stale phase.
+  // Set BEFORE dispatch, cleared only in the run's finally (keyed by runId).
+  const runningRef = useRef(false);
 
-  const lastVerdict = events.findLast((e) => e.type === "verdict") as
-    | Extract<CouncilEvent, { type: "verdict" }>
-    | undefined;
+  const run = useCallback((q: string, m: CouncilMode) => {
+    // Duplicate-submission guard (Part 17): synchronous ref + reducer state.
+    if (runningRef.current || isSessionActive(stateRef.current.phase)) return;
+    runningRef.current = true;
 
-  const lastErrorEvent = events.findLast((e) => e.type === "error") as
-    | Extract<CouncilEvent, { type: "error" }>
-    | undefined;
+    dispatch({ type: "SUBMIT", question: q, mode: m });
 
-  const reset = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setPhase("idle");
-    setError(null);
-    setEvents([]);
-    setMode(null);
-  }, []);
+    const controller = new AbortController();
+    const runId = makeClientId();
+    abortRef.current = controller;
+    activeRunRef.current = { controller, runId };
 
-  const run = useCallback(
-    async (q: string, m: CouncilMode) => {
-      abortRef.current?.abort();
-      const controller = new AbortController();
-      abortRef.current = controller;
-
-      setQuestion(q);
-      setMode(m);
-      setEvents([]);
-      setError(null);
-      setPhase("running");
-
+    void (async () => {
       try {
         const res = await fetch("/api/council", {
           method: "POST",
@@ -72,11 +70,19 @@ export function useCouncil() {
           signal: controller.signal,
         });
 
+        if (controller.signal.aborted) return;
+
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
-          throw new Error((body as { error?: string }).error ?? `Request failed (${res.status})`);
+          const message =
+            (body as { error?: string }).error ?? `Request failed (${res.status}).`;
+          dispatch({ type: "STREAM_ERROR", message });
+          return;
         }
-        if (!res.body) throw new Error("No response stream.");
+        if (!res.body) {
+          dispatch({ type: "STREAM_ERROR", message: "No response stream." });
+          return;
+        }
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -100,53 +106,85 @@ export function useCouncil() {
             try {
               const parsed: unknown = JSON.parse(line.slice(6));
               if (isEvent(parsed)) {
-                setEvents((prev) => [...prev, parsed]);
-                if (parsed.type === "verdict") {
+                dispatch({ type: "EVENT", event: parsed });
+                if (parsed.type === "verdict" || parsed.type === "error") {
                   terminal = true;
-                  setPhase("complete");
-                }
-                if (parsed.type === "error") {
-                  terminal = true;
-                  setPhase("error");
-                  setError(parsed.message);
                 }
               }
             } catch {
-              // ignore malformed frame
+              // ignore malformed frame — never let one bad frame kill the run
             }
           }
         }
 
-        // If stream ended without a verdict or error event, surface it.
-        // (Tracked via a local flag rather than a state updater so the
-        // updater stays pure.)
-        if (!terminal) {
-          setError("The Council stream ended without a verdict.");
-          setPhase("error");
+        // Stream ended cleanly without a terminal event → interrupted.
+        if (!terminal && !controller.signal.aborted) {
+          dispatch({
+            type: "STREAM_ERROR",
+            message: "The Council stream ended before a verdict was reached.",
+          });
         }
       } catch (err) {
-        if (controller.signal.aborted) {
-          setPhase("idle");
-          return;
-        }
-        setError(err instanceof Error ? err.message : "The Council failed unexpectedly.");
-        setPhase("error");
+        if (controller.signal.aborted) return; // cancelled — reducer already handled it
+        const message =
+          err instanceof Error && err.name !== "AbortError"
+            ? err.message
+            : "The connection to the Council was lost.";
+        dispatch({ type: "STREAM_ERROR", message });
       } finally {
-        if (abortRef.current === controller) abortRef.current = null;
+        if (activeRunRef.current?.runId === runId) {
+          activeRunRef.current = null;
+          abortRef.current = null;
+          runningRef.current = false;
+        }
       }
-    },
-    [],
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const cancel = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    dispatch({ type: "CANCEL" });
+  }, []);
+
+  const reset = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    activeRunRef.current = null;
+    runningRef.current = false;
+    dispatch({ type: "RESET" });
+  }, []);
+
+  // Abort any in-flight request on unmount (Part 3: clean up listeners).
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+      activeRunRef.current = null;
+      runningRef.current = false;
+    };
+  }, []);
+
+  const lastVerdict = useMemo(
+    () =>
+      state.events.findLast((e): e is Extract<CouncilEvent, { type: "verdict" }> => e.type === "verdict"),
+    [state.events],
   );
 
   return {
-    phase,
-    error,
-    question,
-    mode,
-    events,
+    phase: state.phase,
+    error: state.error,
+    question: state.question,
+    mode: state.mode,
+    events: state.events,
+    sessionId: state.sessionId,
+    classification: state.classification,
+    history: state.history,
     lastVerdict,
-    lastErrorEvent,
+    isActive: isSessionActive(state.phase),
     run,
+    cancel,
     reset,
   };
 }

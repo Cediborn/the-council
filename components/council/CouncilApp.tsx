@@ -3,12 +3,21 @@
 import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useCouncil } from "@/lib/client/useCouncil";
-import type { AgentAnalysis, CouncilMode, DevilAdvocateAnalysis } from "@/lib/council/types";
+import { completedAnalyses } from "@/lib/client/councilState";
+import type { AgentAnalysis } from "@/lib/council/types";
 import { QuestionScreen } from "./QuestionScreen";
 import { DeliberationPanel } from "./DeliberationPanel";
 import { VerdictView } from "./VerdictView";
 import { ChallengeButton } from "./ChallengeButton";
+import { RotateIcon } from "@/components/icons";
 
+/**
+ * COUNCIL V0.2 — the phase state machine.
+ *
+ * Reliability fix (Part 1): an error ALWAYS renders the error panel, even when
+ * zero SSE events arrived (network failure / provider down before any event).
+ * The user can retry or start a new question — a refresh is never required.
+ */
 export function CouncilApp() {
   const council = useCouncil();
   const [showChallenge, setShowChallenge] = useState(false);
@@ -29,18 +38,24 @@ export function CouncilApp() {
           </motion.div>
         )}
 
-        {(council.phase === "running" || council.phase === "error") &&
+        {(council.phase === "submitting" || council.phase === "running") &&
           council.events.length === 0 && (
             <motion.div
               key="starting"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="flex flex-1 items-center justify-center"
+              className="flex flex-1 flex-col items-center justify-center gap-6"
             >
               <p className="font-display text-lg text-ink-soft animate-pulse-soft">
                 The Council is assembling…
               </p>
+              <button
+                onClick={council.cancel}
+                className="inline-flex items-center gap-2 rounded-xl border border-line bg-surface px-5 py-2.5 text-sm font-semibold text-ink-soft transition-all hover:border-bad/50 hover:text-bad"
+              >
+                Cancel
+              </button>
             </motion.div>
           )}
 
@@ -56,11 +71,35 @@ export function CouncilApp() {
               question={council.question}
               mode={council.mode ?? "QUICK"}
               events={council.events}
+              onCancel={council.cancel}
             />
           </motion.div>
         )}
 
-        {council.phase === "error" && council.events.length > 0 && (
+        {council.phase === "cancelled" && (
+          <motion.div
+            key="cancelled"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex flex-1 flex-col justify-center"
+          >
+            <div className="mx-auto w-full max-w-xl rounded-2xl border border-line bg-card p-8 text-center shadow-card">
+              <h2 className="font-display text-2xl font-bold text-ink">Council stopped</h2>
+              <p className="mt-2 text-sm text-ink-soft">
+                The session was cancelled. No request is left running — you can
+                immediately ask something else.
+              </p>
+              <button
+                onClick={council.reset}
+                className="mt-6 inline-flex items-center gap-2 rounded-xl bg-brand px-6 py-3 text-sm font-semibold text-white transition-all hover:bg-brand-2"
+              >
+                New question
+              </button>
+            </div>
+          </motion.div>
+        )}
+
+        {council.phase === "error" && (
           <motion.div
             key="error"
             initial={{ opacity: 0 }}
@@ -69,8 +108,7 @@ export function CouncilApp() {
           >
             <ErrorPanel
               message={council.error ?? "Unknown error"}
-              analyses={council.lastErrorEvent?.analyses ?? []}
-              devilsAdvocate={council.lastErrorEvent?.devilsAdvocate ?? null}
+              preserved={completedAnalyses(council.events)}
               onRetry={() => {
                 if (council.question && council.mode) council.run(council.question, council.mode);
               }}
@@ -111,27 +149,33 @@ export function CouncilApp() {
   );
 }
 
+/**
+ * Error recovery panel (Part 2): explains the likely cause, preserves completed
+ * analyses (Part 5), and always offers TRY AGAIN + NEW QUESTION. The Council
+ * never requires a browser refresh to recover.
+ */
 function ErrorPanel({
   message,
-  analyses,
-  devilsAdvocate,
+  preserved,
   onRetry,
   onReset,
 }: {
   message: string;
-  analyses: AgentAnalysis[];
-  devilsAdvocate: DevilAdvocateAnalysis | null;
+  preserved: AgentAnalysis[];
   onRetry: () => void;
   onReset: () => void;
 }) {
-  const preserved = analyses.filter((a) => !a.failed);
+  const likelyCause = explainCause(message);
   return (
     <div className="rounded-2xl border border-bad/40 bg-card p-8 shadow-card">
-      <h2 className="font-display text-2xl font-bold text-bad">The Council could not reach a verdict</h2>
-      <p className="mt-3 text-ink-soft">{message}</p>
+      <h2 className="font-display text-2xl font-bold text-bad">Council session interrupted</h2>
+      <p className="mt-3 text-ink">{message}</p>
+      {likelyCause && (
+        <p className="mt-2 rounded-lg bg-surface px-3 py-2 text-sm text-ink-soft">{likelyCause}</p>
+      )}
       <p className="mt-2 text-sm text-ink-soft">
         {preserved.length > 0
-          ? "The analyses completed before the failure are preserved below. No verdict is fabricated."
+          ? `${preserved.length} of ${preserved.length} completed analysis${preserved.length === 1 ? "" : "es"} are preserved below. No verdict is fabricated.`
           : "No completed analyses could be preserved. No verdict is fabricated."}
       </p>
 
@@ -139,23 +183,14 @@ function ErrorPanel({
         <div className="mt-6 flex flex-col gap-2">
           {preserved.map((a) => (
             <div key={a.agent} className="rounded-xl border border-line bg-surface px-4 py-3">
-              <p className="font-display text-sm font-semibold text-ink">{a.name}</p>
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-mint" aria-hidden="true" />
+                <p className="font-display text-sm font-semibold text-ink">{a.name}</p>
+                <span className="text-[10px] uppercase tracking-wider text-mint">completed</span>
+              </div>
               {a.summary && <p className="mt-1 text-sm leading-relaxed text-ink-soft">{a.summary}</p>}
-              {a.keyPoints.length > 0 && (
-                <ul className="mt-2 flex flex-col gap-1">
-                  {a.keyPoints.map((p, i) => (
-                    <li key={i} className="text-xs text-ink-soft">· {p}</li>
-                  ))}
-                </ul>
-              )}
             </div>
           ))}
-          {devilsAdvocate && !devilsAdvocate.failed && (
-            <div className="rounded-xl border border-line bg-surface px-4 py-3">
-              <p className="font-display text-sm font-semibold text-ink">Devil's Advocate</p>
-              <p className="mt-1 text-sm leading-relaxed text-ink-soft">{devilsAdvocate.summary}</p>
-            </div>
-          )}
         </div>
       )}
 
@@ -164,15 +199,42 @@ function ErrorPanel({
           onClick={onRetry}
           className="inline-flex items-center gap-2 rounded-xl bg-brand px-5 py-3 text-sm font-semibold text-white transition-all hover:bg-brand-2"
         >
-          Retry
+          <RotateIcon className="h-4 w-4" />
+          Try again
         </button>
         <button
           onClick={onReset}
           className="inline-flex items-center gap-2 rounded-xl border border-line bg-surface px-5 py-3 text-sm font-semibold text-ink transition-all hover:border-brand/50"
         >
-          Start over
+          New question
         </button>
       </div>
     </div>
   );
+}
+
+/** Map common failure messages to an actionable explanation (Part 2). */
+function explainCause(message: string): string | null {
+  const m = message.toLowerCase();
+  if (
+    m.includes("ollama") ||
+    m.includes("connect") ||
+    m.includes("network") ||
+    m.includes("fetch failed") ||
+    m.includes("econgrefused") ||
+    m.includes("unreachable") ||
+    m.includes("provider")
+  ) {
+    return "Unable to connect to the model provider. Make sure Ollama is running, then try again.";
+  }
+  if (m.includes("timeout") || m.includes("timed out") || m.includes("aborted")) {
+    return "A model call timed out. The Council stayed open — try again, or check the model is responsive.";
+  }
+  if (m.includes("stream ended")) {
+    return "The connection was interrupted mid-deliberation. Completed analyses are preserved below.";
+  }
+  if (m.includes("invalid")) {
+    return "The request was not valid — check the question and try again.";
+  }
+  return null;
 }

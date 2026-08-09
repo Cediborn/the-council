@@ -33,9 +33,18 @@ export class OpenAiProvider implements ModelProvider {
     this.model = config.model;
   }
 
+  withModel(model: string): ModelProvider {
+    return new OpenAiProvider(this.id, {
+      baseUrl: this.baseUrl,
+      apiKey: this.apiKey,
+      model,
+    });
+  }
+
   async chat(input: ProviderChatInput): Promise<ProviderChatResult> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000);
+    const timeoutMs = Number(process.env.COUNCIL_TIMEOUT_MS ?? 120_000);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const onOuterAbort = () => controller.abort();
     input.signal?.addEventListener("abort", onOuterAbort);
 
