@@ -1,0 +1,269 @@
+import { describe, expect, it } from "vitest";
+import { runCouncil } from "@/lib/council/orchestrator";
+import type { ModelProvider, ProviderChatInput, ProviderChatResult } from "@/lib/council/providers";
+import type { CouncilEvent } from "@/lib/council/types";
+
+function makeProvider(
+  responses: (input: ProviderChatInput) => string,
+  failFirstN = 0,
+  opts?: { abort?: boolean },
+): ModelProvider {
+  let calls = 0;
+  return {
+    id: "mock",
+    model: "mock-model",
+    async chat(input: ProviderChatInput): Promise<ProviderChatResult> {
+      if (opts?.abort && input.signal?.aborted) {
+        throw new Error("aborted");
+      }
+      calls += 1;
+      if (calls <= failFirstN) throw new Error("provider down");
+      return { content: responses(input), usage: { inputTokens: 10, outputTokens: 20 } };
+    },
+  };
+}
+
+const agentJson = (overrides: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    summary: "A considered analysis.",
+    stance: "SUPPORT",
+    keyPoints: ["point one", "point two"],
+    assumptions: ["assumption"],
+    risks: ["risk"],
+    missingInformation: ["unknown"],
+    confidence: 70,
+    ...overrides,
+  });
+
+const comparisonJson = JSON.stringify({
+  agreements: [{ topic: "topic", agents: ["Reasoner"], summary: "agree" }],
+  disagreements: [],
+  sharedAssumptions: ["shared"],
+  stanceCounts: { SUPPORT: 3, OPPOSE: 0, CONDITIONAL: 0, NEUTRAL: 0, INSUFFICIENT: 0 },
+});
+
+const daJson = JSON.stringify({
+  summary: "stress test",
+  strongestArgument: "strong",
+  attemptToBreakIt: "break",
+  unsupportedAssumptions: ["a"],
+  convergenceWarning: "",
+  minorityPoint: "",
+  evidenceThatWouldResolve: ["evidence"],
+});
+
+const verdictJson = JSON.stringify({
+  verdict: "BUILD",
+  score: 8,
+  confidence: 85,
+  summary: "A solid proposal.",
+  strongestArgumentFor: "market fit",
+  strongestArgumentAgainst: "competition",
+  keyAgreements: ["a"],
+  keyDisagreements: ["b"],
+  criticalAssumptions: ["c"],
+  criticalRisks: ["d"],
+  recommendedAction: "Proceed with a pilot.",
+  whatWouldChangeTheVerdict: ["new data"],
+  reasoning: "Weighing evidence, the case is strong.",
+});
+
+async function collect(events: AsyncGenerator<CouncilEvent>): Promise<CouncilEvent[]> {
+  const out: CouncilEvent[] = [];
+  for await (const e of events) out.push(e);
+  return out;
+}
+
+describe("runCouncil — QUICK mode", () => {
+  it("produces a verdict with 3 analytical agents + judge", async () => {
+    const provider = makeProvider((input) => {
+      if (input.system.includes("JUDGE")) return verdictJson;
+      return agentJson();
+    });
+    const events = await collect(
+      runCouncil({ mode: "QUICK", question: "Should I buy this phone?", provider }),
+    );
+
+    const convened = events.find((e) => e.type === "convened");
+    expect(convened?.type).toBe("convened");
+    if (convened?.type === "convened") {
+      expect(convened.agents).toHaveLength(3);
+    }
+
+    const done = events.filter((e) => e.type === "agent:done");
+    expect(done.length).toBe(3); // 3 analysts (the judge arrives via the verdict event)
+
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
+    if (verdict?.type === "verdict") {
+      expect(verdict.verdict.verdict).toBe("BUILD");
+      expect(verdict.verdict.score).toBe(8);
+      expect(verdict.usage.mode).toBe("QUICK");
+      expect(verdict.usage.success).toBe(true);
+      expect(verdict.usage.agentCalls).toBe(4);
+    }
+  });
+
+  it("does not run comparison or devil's advocate in QUICK", async () => {
+    const provider = makeProvider((input) => {
+      if (input.system.includes("JUDGE")) return verdictJson;
+      return agentJson();
+    });
+    const events = await collect(
+      runCouncil({ mode: "QUICK", question: "Is this a good idea?", provider }),
+    );
+    expect(events.some((e) => e.type === "comparison")).toBe(false);
+    expect(events.some((e) => e.type === "da:done")).toBe(false);
+  });
+});
+
+describe("runCouncil — FULL mode", () => {
+  it("runs 4 analysts + comparison + judge", async () => {
+    const provider = makeProvider((input) => {
+      if (input.system.includes("JUDGE")) return verdictJson;
+      if (input.system.includes("COMPARER")) return comparisonJson;
+      return agentJson();
+    });
+    const events = await collect(
+      runCouncil({ mode: "FULL", question: "Should I start a business?", provider }),
+    );
+
+    const done = events.filter((e) => e.type === "agent:done");
+    expect(done.length).toBe(4);
+
+    const comparison = events.find((e) => e.type === "comparison");
+    expect(comparison?.type).toBe("comparison");
+    if (comparison?.type === "comparison") {
+      expect(comparison.comparison.agreements).toHaveLength(1);
+    }
+
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
+    if (verdict?.type === "verdict") expect(verdict.usage.agentCalls).toBe(6); // 4 + comparer + judge
+  });
+});
+
+describe("runCouncil — DEEP mode", () => {
+  it("runs 4 analysts + comparison + devil's advocate + judge", async () => {
+    const provider = makeProvider((input) => {
+      if (input.system.includes("JUDGE")) return verdictJson;
+      if (input.system.includes("COMPARER")) return comparisonJson;
+      if (input.system.includes("DEVIL'S ADVOCATE")) return daJson;
+      return agentJson();
+    });
+    const events = await collect(
+      runCouncil({ mode: "DEEP", question: "Should I change careers?", provider }),
+    );
+
+    const da = events.find((e) => e.type === "da:done");
+    expect(da?.type).toBe("da:done");
+    if (da?.type === "da:done") {
+      expect(da.analysis.strongestArgument).toBe("strong");
+      expect(da.analysis.attemptToBreakIt).toBe("break");
+    }
+
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
+    if (verdict?.type === "verdict") expect(verdict.usage.agentCalls).toBe(7); // 4 + comparer + da + judge
+  });
+});
+
+describe("runCouncil — resilience", () => {
+  it("continues when one analyst fails and the judge is told", async () => {
+    let calls = 0;
+    const provider: ModelProvider = {
+      id: "mock",
+      model: "mock-model",
+      async chat(input: ProviderChatInput): Promise<ProviderChatResult> {
+        calls += 1;
+        // The Reasoner always fails (even after retry); everyone else succeeds.
+        if (input.system.includes("REASONER")) throw new Error("boom");
+        if (input.system.includes("JUDGE"))
+          return { content: verdictJson, usage: { inputTokens: 10, outputTokens: 20 } };
+        if (input.system.includes("COMPARER"))
+          return { content: comparisonJson, usage: { inputTokens: 10, outputTokens: 20 } };
+        return { content: agentJson(), usage: { inputTokens: 10, outputTokens: 20 } };
+      },
+    };
+
+    const events = await collect(
+      runCouncil({ mode: "FULL", question: "A hard question", provider }),
+    );
+
+    const done = events.filter((e) => e.type === "agent:done");
+    expect(done.some((d) => d.analysis.failed)).toBe(true);
+
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
+    if (verdict?.type === "verdict") {
+      expect(verdict.usage.failedAgentCalls).toBeGreaterThanOrEqual(1);
+      expect(verdict.usage.success).toBe(true);
+    }
+  });
+
+  it("throws CouncilRunError when every analyst fails", async () => {
+    const provider = makeProvider(() => "irrelevant", 99);
+    await expect(async () => {
+      for await (const _ of runCouncil({ mode: "FULL", question: "x", provider })) {
+        // drain
+      }
+    }).rejects.toThrow(/Every analytical agent failed/);
+  });
+
+  it("returns a degraded verdict when the judge returns prose", async () => {
+    const provider = makeProvider((input) => {
+      if (input.system.includes("JUDGE")) return "I think this is a fine idea overall, yes.";
+      if (input.system.includes("COMPARER")) return comparisonJson;
+      return agentJson();
+    });
+    const events = await collect(
+      runCouncil({ mode: "FULL", question: "Is this a good idea?", provider }),
+    );
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
+    if (verdict?.type === "verdict") {
+      expect(verdict.verdict.degraded).toBe(true);
+      // The fallback is still a valid verdict shape.
+      expect(["BUILD", "REFINE", "RECONSIDER", "INSUFFICIENT_INFORMATION"]).toContain(
+        verdict.verdict.verdict,
+      );
+      expect(verdict.verdict.score).toBeGreaterThanOrEqual(0);
+      expect(verdict.verdict.score).toBeLessThanOrEqual(10);
+      expect(verdict.verdict.confidence).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("returns a degraded verdict when the judge throws", async () => {
+    const provider = makeProvider((input) => {
+      if (input.system.includes("JUDGE")) throw new Error("judge crash");
+      if (input.system.includes("COMPARER")) return comparisonJson;
+      return agentJson();
+    });
+    const events = await collect(
+      runCouncil({ mode: "FULL", question: "Is this a good idea?", provider }),
+    );
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
+    if (verdict?.type === "verdict") {
+      expect(verdict.verdict.degraded).toBe(true);
+    }
+  });
+
+  it("honors aborted signals", async () => {
+    const controller = new AbortController();
+    const provider: ModelProvider = {
+      id: "mock",
+      model: "mock-model",
+      async chat(input: ProviderChatInput): Promise<ProviderChatResult> {
+        if (input.signal?.aborted) throw new Error("aborted");
+        controller.abort();
+        return { content: agentJson(), usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    await expect(async () => {
+      for await (const _ of runCouncil({ mode: "QUICK", question: "x", provider, signal: controller.signal })) {
+        // drain
+      }
+    }).rejects.toThrow();
+  });
+});

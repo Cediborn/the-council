@@ -1,0 +1,197 @@
+@import "tailwindcss";
+
+/* Class-based dark mode (toggled on <html>) */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* ---------- Semantic color system ---------- */
+  --color-brand: #8b5cf6; /* Primary — violet */
+  --color-brand-2: #a78bfa; /* Secondary — light violet */
+  --color-mint: #22c55e; /* Success */
+  --color-good: #16a34a; /* Success — text */
+  --color-warn: #fb923c; /* Warning */
+  --color-info: #3b82f6; /* Info */
+  --color-achievement: #facc15; /* Gold */
+  --color-bad: #ef4444; /* Danger */
+
+  --color-rose: #ec4899;
+  --color-tangerine: #f97316;
+  --color-teal: #14b8a6;
+  --color-sky: #0ea5e9;
+
+  /* Semantic tokens — flipped by .dark via CSS variables */
+  --color-bg: var(--t-bg);
+  --color-surface: var(--t-surface);
+  --color-card: var(--t-card);
+  --color-line: var(--t-line);
+  --color-ink: var(--t-ink);
+  --color-ink-soft: var(--t-ink-soft);
+
+  /* ---------- Typography ---------- */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-display: var(--font-grotesk), ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  /* Shadows */
+  --shadow-card: 0 1px 2px rgb(56 44 24 / 0.06), 0 6px 16px -6px rgb(56 44 24 / 0.1);
+  --shadow-lift: 0 2px 4px rgb(56 44 24 / 0.08), 0 14px 28px -10px rgb(56 44 24 / 0.18);
+
+  /* Animations */
+  --animate-fade-up: fade-up 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-fade-in: fade-in 0.3s ease-out both;
+  --animate-pop: pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  --animate-grow-y: grow-y 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-pulse-soft: pulse-soft 2s ease-in-out infinite;
+  --animate-glow: glow 2.2s ease-in-out infinite;
+
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes pop {
+    from { opacity: 0; transform: scale(0.85); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  @keyframes grow-y {
+    from { height: 0; }
+  }
+  @keyframes pulse-soft {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
+  }
+  @keyframes glow {
+    0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-brand) 0%, transparent); }
+    50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-brand) 22%, transparent); }
+  }
+}
+
+/* ---------- Theme variables ---------- */
+:root {
+  /* Council chamber — deep ink with a violet soul. Dark-first design. */
+  --t-bg: #0e1017;
+  --t-surface: #161927;
+  --t-card: #1a1e30;
+  --t-line: #2a2f45;
+  --t-ink: #f4f4f6;
+  --t-ink-soft: #9aa0b5;
+}
+
+.dark {
+  --t-bg: #0e1017;
+  --t-surface: #161927;
+  --t-card: #1a1e30;
+  --t-line: #2a2f45;
+  --t-ink: #f4f4f6;
+  --t-ink-soft: #9aa0b5;
+}
+
+.light {
+  --t-bg: #f6f3ea;
+  --t-surface: #fffdf6;
+  --t-card: #fffef9;
+  --t-line: #e8e2d3;
+  --t-ink: #1e1b16;
+  --t-ink-soft: #665f4f;
+}
+
+/* ---------- Base ---------- */
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--t-bg);
+  color: var(--t-ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  min-height: 100dvh;
+}
+
+::selection {
+  background-color: color-mix(in srgb, var(--color-brand) 35%, transparent);
+}
+
+/* ---------- Background atmosphere ---------- */
+.bg-council {
+  position: relative;
+}
+
+.bg-council::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 80% 55% at 50% -12%, color-mix(in srgb, var(--color-brand) 22%, transparent), transparent 62%),
+    radial-gradient(ellipse 60% 45% at 92% 110%, color-mix(in srgb, var(--color-info) 14%, transparent), transparent 60%),
+    radial-gradient(ellipse 45% 40% at 4% 100%, color-mix(in srgb, var(--color-rose) 10%, transparent), transparent 55%);
+}
+
+.grain-overlay {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.4'/%3E%3C/svg%3E");
+  opacity: 0.5;
+}
+
+/* ---------- Skeleton ---------- */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background-color: color-mix(in srgb, var(--t-ink) 6%, transparent);
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--t-ink) 9%, transparent), transparent);
+  animation: skeleton-shimmer 1.6s ease-in-out infinite;
+}
+@keyframes skeleton-shimmer {
+  to { transform: translateX(100%); }
+}
+
+/* ---------- Verdict tone accents ---------- */
+.verdict-tone {
+  background-color: color-mix(in srgb, var(--tone, var(--color-brand)) 8%, var(--t-card));
+  border-color: color-mix(in srgb, var(--tone, var(--color-brand)) 30%, var(--t-line));
+}
+
+/* ---------- Scrollbar ---------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--t-ink) 22%, transparent) transparent;
+}
+
+/* ---------- Focus rings ---------- */
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ---------- Reduced motion ---------- */
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
