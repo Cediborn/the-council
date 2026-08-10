@@ -52,6 +52,12 @@ export const agentAnalysisSchema = z.object({
   risks: stringList(6),
   missingInformation: stringList(6),
   confidence: z.number().min(0).max(100).default(50),
+  // V0.2.1 (Part 11): how strong the evidence behind the analysis is. `.catch`
+  // keeps a garbage enum value from degrading the whole analysis.
+  evidenceQuality: z
+    .enum(["STRONG", "MODERATE", "WEAK", "UNKNOWN"])
+    .catch("UNKNOWN")
+    .default("UNKNOWN"),
 });
 
 /** Comparison stage (FULL + DEEP) — V0.2 is richer (Part 13). */
@@ -75,6 +81,11 @@ export const comparisonSchema = z.object({
           .max(6)
           .default([]),
         summary: point,
+        // V0.2.1 (Part 13): FUNDAMENTAL vs SUPERFICIAL disagreement.
+        nature: z
+          .enum(["SUPERFICIAL", "FUNDAMENTAL"])
+          .catch("FUNDAMENTAL")
+          .default("FUNDAMENTAL"),
       }),
     )
     .max(6)
@@ -87,6 +98,10 @@ export const comparisonSchema = z.object({
   missingInformation: stringList(6),
   risks: stringList(6),
   uniqueInsights: stringList(6),
+  // V0.2.1 (Part 12): the strongest and weakest argument on the table. `.catch`
+  // tolerates omission so a missing field never degrades the whole comparison.
+  strongestArgument: z.string().min(1).max(600).catch(""),
+  weakestArgument: z.string().min(1).max(600).catch(""),
   stanceCounts: z
     .object({
       SUPPORT: z.number().int().min(0).default(0),
@@ -99,9 +114,14 @@ export const comparisonSchema = z.object({
     .default({}),
 });
 
-/** Reassessment (DEEP only, after Devil's Advocate) — V0.2 (Part 12). */
+/** Reassessment (DEEP only, after Devil's Advocate) — V0.2.1 (Parts 12, 21). */
 export const reassessmentSchema = z.object({
   summary: nonEmptyString,
+  // V0.2.1 (Part 21): what the stress-test did to the emerging conclusion.
+  shift: z
+    .enum(["UNCHANGED", "STRENGTHENED", "WEAKENED", "REVERSED"])
+    .catch("UNCHANGED")
+    .default("UNCHANGED"),
   hardened: stringList(6),
   weakened: stringList(6),
   positionChanges: z

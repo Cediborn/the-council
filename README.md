@@ -1,4 +1,4 @@
-# COUNCIL — V0.2
+# COUNCIL — V0.2.1
 
 A general-purpose, multi-agent **deliberation engine**. Ask it anything —
 everyday decisions, school questions, business ideas, code questions, life
@@ -48,6 +48,40 @@ The **Judge** does not vote. It weighs argument quality — a strong minority
 argument can outweigh a weak majority. Verdicts: `BUILD`, `REFINE`,
 `VALIDATE`, `RECONSIDER`, `REJECT`, `INSUFFICIENT_INFORMATION`.
 
+## V0.2.1 changes (intelligence & reasoning)
+
+- **Fuller taxonomy.** Question types now include `troubleshooting` and
+  `argumentative`; capabilities grew to 12 (`mathematical_reasoning`,
+  `comparison`, `assumption_testing`, `creativity`, plus the originals).
+- **Per-agent dynamic emphasis.** In every mode, each analytical agent is
+  told which of *its own* capabilities the question needs (and honestly told
+  to keep its lens brief when it isn't central) — contextual Full/Deep
+  reasoning without sacrificing independence.
+- **Evidence quality.** Every analysis reports how strong its supporting
+  evidence is (`STRONG`/`MODERATE`/`WEAK`/`UNKNOWN`), and every agent prompt
+  now enforces the fact/assumption/inference/speculation discipline —
+  confidence, majority opinion, and the user's assertion are never treated
+  as evidence.
+- **Sharper agents.** The Reasoner must call out a wrong premise; the Skeptic
+  must stress-test without contrarianism and say so when an argument is
+  genuinely strong; the Practicalist weighs opportunity cost and failure
+  points; the Perspective may reframe the question itself.
+- **Comparison finds the real disagreement.** The Comparer now names the
+  strongest and weakest argument on the table and classifies each
+  disagreement as FUNDAMENTAL (incompatible claims / different questions) or
+  SUPERFICIAL (same position, different words) — the UI labels them.
+- **Judge process.** The Judge follows an explicit 10-step reasoning
+  process, calibrates confidence to the strength of the available reasoning
+  (never inflated), and is instructed to be willing to say **no** — `REJECT`,
+  `RECONSIDER`, or `INSUFFICIENT_INFORMATION` — without softening every
+  conclusion into "has potential, but...".
+- **Deep reassessment shift.** The Reassessor now reports what the stress-test
+  did to the emerging conclusion — `UNCHANGED` / `STRENGTHENED` / `WEAKENED` /
+  `REVERSED` — shown as a badge on the verdict.
+- **Anti-yes-man & anti-contrarian prompt contracts** are pinned by
+  deterministic tests, and the general-question battery (math, code,
+  purchases, university, relationships, arguments…) is covered by tests too.
+
 ## V0.2 changes
 
 - **Reliability (headline).** A failed Council session can never leave the
@@ -58,9 +92,10 @@ argument can outweigh a weak majority. Verdicts: `BUILD`, `REFINE`,
   cleans up listeners, and lets you immediately ask something else.
 - **Question classifier.** Every question is classified into a type
   (decision, mathematical, technical, comparison, business, planning,
-  educational, creative, argument, explanation, general) with an ordered
-  capability profile. Quick mode picks the 3 agents whose capabilities fit
-  best; all modes inject the classification into every agent prompt.
+  educational, creative, argumentative, troubleshooting, explanation,
+  general) with an ordered capability profile. Quick mode picks the 3 agents
+  whose capabilities fit best; all modes inject the classification into every
+  agent prompt.
 - **Deep mode is deeper.** After the Devil's Advocate stress-test, a
   Reassessment stage re-evaluates which arguments hardened, which weakened,
   and which positions changed — the Judge sees all of it.

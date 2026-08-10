@@ -15,26 +15,38 @@ export type CouncilMode = "QUICK" | "FULL" | "DEEP";
 export type QuestionType =
   | "decision"
   | "explanation"
+  | "comparison"
   | "technical"
   | "mathematical"
   | "educational"
-  | "comparison"
   | "business"
-  | "creative"
   | "planning"
-  | "argument"
+  | "creative"
+  | "argumentative"
+  | "troubleshooting"
   | "general";
 
+/**
+ * COUNCIL V0.2.1 — capability taxonomy (Part 3).
+ * The Council picks the reasoning capabilities a question needs; agents map
+ * onto capabilities, never the other way around.
+ */
 export type Capability =
   | "logical_reasoning"
   | "skepticism"
   | "practical_analysis"
   | "technical_analysis"
+  | "mathematical_reasoning"
   | "educational_explanation"
-  | "quantitative_reasoning"
   | "strategic_reasoning"
   | "risk_analysis"
-  | "alternative_perspectives";
+  | "comparison"
+  | "alternative_perspectives"
+  | "assumption_testing"
+  | "creativity";
+
+/** How strongly the available evidence supports an analysis (Part 11). */
+export type EvidenceQuality = "STRONG" | "MODERATE" | "WEAK" | "UNKNOWN";
 
 export interface QuestionClassification {
   type: QuestionType;
@@ -76,6 +88,8 @@ export interface AgentAnalysis {
   risks: string[];
   missingInformation: string[];
   confidence: number; // 0-100
+  /** V0.2.1: how strong the evidence behind this analysis is (Part 11). */
+  evidenceQuality?: EvidenceQuality;
   /** True when the model output could not be parsed and raw text was kept. */
   degraded?: boolean;
   /** Set when the model call itself failed (agent failure — not a response). */
@@ -85,10 +99,16 @@ export interface AgentAnalysis {
   retries?: number;
 }
 
-/** Output of the comparison stage (FULL + DEEP) — V0.2 is richer (Part 13). */
+/** Output of the comparison stage (FULL + DEEP) — V0.2.1 (Parts 12-13). */
 export interface CouncilComparison {
   agreements: { topic: string; agents: string[]; summary: string }[];
-  disagreements: { topic: string; positions: { agent: string; position: string }[]; summary: string }[];
+  disagreements: {
+    topic: string;
+    positions: { agent: string; position: string }[];
+    summary: string;
+    /** V0.2.1: FUNDAMENTAL (incompatible claims/different questions) vs SUPERFICIAL (same position, different words) — Part 13. */
+    nature?: "SUPERFICIAL" | "FUNDAMENTAL";
+  }[];
   /** V0.2: where analyses directly contradict each other. */
   contradictions: { topic: string; summary: string }[];
   sharedAssumptions: string[];
@@ -98,6 +118,10 @@ export interface CouncilComparison {
   risks: string[];
   /** V0.2: insights only one agent surfaced. */
   uniqueInsights: string[];
+  /** V0.2.1: the single strongest argument across all analyses (Part 12). */
+  strongestArgument: string;
+  /** V0.2.1: the single weakest argument across all analyses (Part 12). */
+  weakestArgument: string;
   stanceCounts: Record<Stance, number>;
 }
 
@@ -105,6 +129,8 @@ export interface CouncilComparison {
 export interface ReassessmentAnalysis {
   /** Short narrative of what the Devil's Advocate changed. */
   summary: string;
+  /** V0.2.1: what the stress-test did to the emerging conclusion (Part 21). */
+  shift?: "UNCHANGED" | "STRENGTHENED" | "WEAKENED" | "REVERSED";
   /** Arguments that hardened after the stress-test. */
   hardened: string[];
   /** Arguments that weakened or collapsed. */

@@ -178,6 +178,9 @@ function AnalysisCard({
           <p className="font-display text-sm font-semibold text-ink">{analysis.name}</p>
           <p className="text-xs text-ink-soft">
             {labelForStance(analysis.stance)} · confidence {analysis.confidence}%
+            {analysis.evidenceQuality && analysis.evidenceQuality !== "UNKNOWN" && (
+              <> · evidence {analysis.evidenceQuality.toLowerCase()}</>
+            )}
           </p>
         </div>
         <span className="text-xs font-medium text-brand">{open ? "Hide analysis" : "View analysis"}</span>
@@ -389,7 +392,14 @@ function AgreementSummary({ events }: { events: CouncilEvent[] }) {
         <ul className="mt-2 flex flex-col gap-1">
           {disagreements.map((d, i) => (
             <li key={i} className="text-xs text-ink-soft">
-              {d.topic}: {d.summary}
+              <span
+                className={`font-semibold ${
+                  d.nature === "SUPERFICIAL" ? "text-info" : "text-warn"
+                }`}
+              >
+                {d.nature === "SUPERFICIAL" ? "Superficial" : "Fundamental"} disagreement:
+              </span>{" "}
+              {d.topic} — {d.summary}
             </li>
           ))}
         </ul>
@@ -411,16 +421,36 @@ function AgreementSummary({ events }: { events: CouncilEvent[] }) {
   );
 }
 
-/** V0.2 comparison extras: missing info, risks, unique insights (Part 13). */
+/** V0.2.1 comparison extras: strongest/weakest argument, missing info, risks, unique insights (Parts 12-13). */
 function ComparisonExtras({ events }: { events: CouncilEvent[] }) {
   const comparison = events.findLast((e) => e.type === "comparison");
   if (!comparison) return null;
   const c = comparison.comparison;
   const hasAny =
-    c.missingInformation.length > 0 || c.risks.length > 0 || c.uniqueInsights.length > 0;
+    c.missingInformation.length > 0 ||
+    c.risks.length > 0 ||
+    c.uniqueInsights.length > 0 ||
+    Boolean(c.strongestArgument) ||
+    Boolean(c.weakestArgument);
   if (!hasAny) return null;
   return (
     <div className="mt-6 grid gap-3 sm:grid-cols-2">
+      {c.strongestArgument && (
+        <div className="rounded-xl border border-mint/25 bg-mint/5 p-4">
+          <p className="font-display text-xs font-bold uppercase tracking-widest text-mint">
+            Strongest argument on the table
+          </p>
+          <p className="mt-1.5 text-sm leading-relaxed text-ink">{c.strongestArgument}</p>
+        </div>
+      )}
+      {c.weakestArgument && (
+        <div className="rounded-xl border border-bad/25 bg-bad/5 p-4">
+          <p className="font-display text-xs font-bold uppercase tracking-widest text-bad">
+            Weakest argument on the table
+          </p>
+          <p className="mt-1.5 text-sm leading-relaxed text-ink">{c.weakestArgument}</p>
+        </div>
+      )}
       <VerdictSection title="Missing information" items={c.missingInformation} dotClass="bg-info" />
       <VerdictSection title="Key risks across analyses" items={c.risks} dotClass={SECTION_DOT.warn} />
       {c.uniqueInsights.length > 0 && (
@@ -448,6 +478,21 @@ function ReassessmentCard({ events }: { events: CouncilEvent[] }) {
       <div className="flex items-center gap-2">
         <RotateIcon className="h-4 w-4 text-brand" />
         <p className="font-display text-sm font-semibold text-ink">Reassessment after the stress-test</p>
+        {r.shift && (
+          <span
+            className={`ml-auto rounded-full border px-2.5 py-0.5 font-mono text-[10px] uppercase tracking-wider ${
+              r.shift === "REVERSED"
+                ? "border-bad/40 text-bad"
+                : r.shift === "WEAKENED"
+                  ? "border-warn/40 text-warn"
+                  : r.shift === "STRENGTHENED"
+                    ? "border-mint/40 text-mint"
+                    : "border-line text-ink-soft"
+            }`}
+          >
+            {r.shift}
+          </span>
+        )}
       </div>
       <p className="mt-2 text-sm leading-relaxed text-ink">{r.summary}</p>
       {r.hardened.length > 0 && (

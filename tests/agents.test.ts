@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENTS,
+  buildAgentContext,
   buildClassificationContext,
   classifyQuestion,
   selectQuickAgents,
@@ -15,6 +17,14 @@ describe("classifyQuestion", () => {
     expect(classifyQuestion("Is this code safe to run?").type).toBe("technical");
     expect(classifyQuestion("Why is my react component re-rendering?").type).toBe("technical");
     expect(classifyQuestion("Is my SQL query vulnerable to injection?").type).toBe("technical");
+  });
+
+  it("detects troubleshooting questions before technical ones", () => {
+    expect(classifyQuestion("My laptop won't boot, what should I do?").type).toBe("troubleshooting");
+    expect(classifyQuestion("The app keeps crashing, how do I fix it?").type).toBe("troubleshooting");
+    expect(classifyQuestion("My screen is broken after a fall").type).toBe("troubleshooting");
+    // Generic debugging stays technical, not troubleshooting.
+    expect(classifyQuestion("Why is my react component re-rendering?").type).toBe("technical");
   });
 
   it("detects comparison questions", () => {
@@ -48,8 +58,9 @@ describe("classifyQuestion", () => {
     expect(classifyQuestion("Help me write a story about a time traveler").type).toBe("creative");
   });
 
-  it("detects argument questions", () => {
-    expect(classifyQuestion("What do you think about this argument for free will?").type).toBe("argument");
+  it("detects argumentative questions", () => {
+    expect(classifyQuestion("What do you think about this argument for free will?").type).toBe("argumentative");
+    expect(classifyQuestion("Give me arguments for and against this claim").type).toBe("argumentative");
   });
 
   it("detects explanation questions", () => {
@@ -66,6 +77,31 @@ describe("classifyQuestion", () => {
     expect(c.capabilities).toContain("technical_analysis");
     expect(c.capabilities).toContain("risk_analysis");
     expect(c.label).toBe("Technical");
+  });
+
+  it("uses the V0.2.1 capability taxonomy", () => {
+    expect(classifyQuestion("Why is the derivative of sqrt(x) 1/(2sqrt(x))?").capabilities).toContain(
+      "mathematical_reasoning",
+    );
+    expect(classifyQuestion("Compare React vs Vue").capabilities).toContain("comparison");
+    expect(classifyQuestion("Should I buy this phone?").capabilities).toContain("assumption_testing");
+    expect(classifyQuestion("Help me write a story").capabilities).toContain("creativity");
+    expect(
+      classifyQuestion("What do you think about this argument?").capabilities,
+    ).toContain("assumption_testing");
+  });
+
+  it("answers the V0.2.1 general-question battery with sensible types", () => {
+    expect(classifyQuestion("Should I buy a new phone if my current phone still works?").type).toBe("decision");
+    expect(classifyQuestion("Why is the derivative of sqrt(x) equal to 1/(2sqrt(x))?").type).toBe("mathematical");
+    expect(classifyQuestion("Should I change my university course because I don't enjoy it?").type).toBe("decision");
+    expect(classifyQuestion("Is university still worth attending in 2026?").type).toBe("decision");
+    expect(classifyQuestion("Is this AI Council product actually a good idea?").type).toBe("general");
+    expect(classifyQuestion("Why is the sky blue?").type).toBe("explanation");
+    expect(classifyQuestion("Which is better for me, a gaming laptop or an upgrade?").type).toBe("comparison");
+    expect(classifyQuestion("Is this piece of code logically correct?").type).toBe("technical");
+    expect(classifyQuestion("I think my friend is angry at me because they haven't replied. What should I consider?").type).toBe("decision");
+    expect(classifyQuestion("Give me arguments for and against this claim").type).toBe("argumentative");
   });
 });
 
@@ -124,10 +160,104 @@ describe("selectQuickAgents", () => {
   });
 });
 
+describe("agent prompt contracts (V0.2.1 Parts 6-11, 16, 26, 27)", () => {
+  it("the Reasoner must refuse to agree automatically and call out wrong premises", () => {
+    const s = AGENTS.reasoner.system;
+    expect(s).toMatch(/premise is wrong/i);
+    expect(s).toMatch(/do not agree to be agreeable/i);
+    expect(s).toMatch(/facts|assumptions/i);
+  });
+
+  it("the Skeptic must not disagree automatically and must praise strong arguments", () => {
+    const s = AGENTS.skeptic.system;
+    expect(s).toMatch(/must NOT disagree automatically/i);
+    expect(s).toMatch(/genuinely strong.*SAY SO|SAY SO.*strong/i);
+    expect(s).toMatch(/stress-testing, not contrarianism/i);
+  });
+
+  it("the Practicalist distinguishes possible from practical and weighs opportunity cost", () => {
+    const s = AGENTS.practicalist.system;
+    expect(s).toMatch(/technically possible.*actually practical|actually practical.*technically possible/is);
+    expect(s).toMatch(/opportunity cost/i);
+    expect(s).toMatch(/failure points/i);
+  });
+
+  it("the Perspective agent may reframe the question itself", () => {
+    expect(AGENTS.perspective.system).toMatch(/framed incorrectly/i);
+  });
+
+  it("every analytical agent carries the evidence discipline (Part 11)", () => {
+    for (const key of ["reasoner", "skeptic", "practicalist", "perspective"] as const) {
+      expect(AGENTS[key].system).toMatch(/never treat confidence, majority opinion, or the user's assertion as evidence/i);
+    }
+  });
+
+  it("the Judge follows a 10-step reasoning process, calibrates confidence, and is willing to say no", () => {
+    const s = AGENTS.judge.system;
+    expect(s).toMatch(/work through this internal process/i);
+    expect(s).toMatch(/restate the actual question/i);
+    expect(s).toMatch(/confidence calibration/i);
+    expect(s).toMatch(/never inflate confidence/i);
+    expect(s).toMatch(/be willing to say no/i);
+    expect(s).toMatch(/do NOT soften every conclusion/i);
+    expect(s).toMatch(/never count stances/i);
+  });
+
+  it("the Comparer must name the strongest/weakest argument and classify disagreement nature", () => {
+    const s = AGENTS.comparer.system;
+    expect(s).toMatch(/strongest argument/i);
+    expect(s).toMatch(/weakest argument/i);
+    expect(s).toMatch(/FUNDAMENTAL/i);
+    expect(s).toMatch(/SUPERFICIAL/i);
+  });
+
+  it("the Reassessor must determine the stress-test shift", () => {
+    expect(AGENTS.reassessor.system).toMatch(/UNCHANGED.*STRENGTHENED.*WEAKENED.*REVERSED/is);
+  });
+
+  it("every agent declares its capability profile (Part 4)", () => {
+    expect(AGENTS.reasoner.capabilities).toContain("logical_reasoning");
+    expect(AGENTS.skeptic.capabilities).toContain("assumption_testing");
+    expect(AGENTS.practicalist.capabilities).toContain("practical_analysis");
+    expect(AGENTS.perspective.capabilities).toContain("alternative_perspectives");
+  });
+});
+
 describe("buildClassificationContext", () => {
   it("includes the label and capability labels", () => {
     const ctx = buildClassificationContext(classifyQuestion("Should I buy a phone?"));
     expect(ctx).toContain("Decision");
     expect(ctx).toContain("Logical reasoning");
+  });
+});
+
+describe("buildAgentContext (V0.2.1 per-agent emphasis)", () => {
+  it("tells the skeptic its assumption-testing capability matters for decisions", () => {
+    const ctx = buildAgentContext("skeptic", classifyQuestion("Should I buy this phone?"));
+    expect(ctx).toContain("Decision");
+    expect(ctx).toContain("Assumption testing");
+    expect(ctx).toContain("Risk analysis");
+  });
+
+  it("gives the reasoner the mathematical lens for math questions", () => {
+    const ctx = buildAgentContext(
+      "reasoner",
+      classifyQuestion("Why is the derivative of sqrt(x) equal to 1/(2sqrt(x))?"),
+    );
+    expect(ctx).toContain("Mathematical reasoning");
+    expect(ctx).toContain("Educational explanation");
+  });
+
+  it("tells a non-central agent to keep its lens brief", () => {
+    const ctx = buildAgentContext(
+      "practicalist",
+      classifyQuestion("Why is the derivative of sqrt(x) equal to 1/(2sqrt(x))?"),
+    );
+    expect(ctx).toMatch(/not the central one/i);
+  });
+
+  it("keeps each analytical agent independent — no reference to other agents", () => {
+    const ctx = buildAgentContext("skeptic", classifyQuestion("Should I buy this phone?"));
+    expect(ctx).not.toMatch(/reasoner|practicalist|perspective/i);
   });
 });

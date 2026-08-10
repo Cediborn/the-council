@@ -1,6 +1,7 @@
 import {
   AGENTS,
   ANALYTICAL_AGENTS,
+  buildAgentContext,
   buildClassificationContext,
   classifyQuestion,
   labelForStance,
@@ -71,6 +72,7 @@ const ANALYSIS_KEYS = [
   "risks",
   "missingInformation",
   "confidence",
+  "evidenceQuality",
 ];
 const COMPARISON_KEYS = [
   "agreements",
@@ -80,6 +82,8 @@ const COMPARISON_KEYS = [
   "missingInformation",
   "risks",
   "uniqueInsights",
+  "strongestArgument",
+  "weakestArgument",
   "stanceCounts",
 ];
 const DEVILS_ADVOCATE_KEYS = [
@@ -93,6 +97,7 @@ const DEVILS_ADVOCATE_KEYS = [
 ];
 const REASSESSMENT_KEYS = [
   "summary",
+  "shift",
   "hardened",
   "weakened",
   "positionChanges",
@@ -199,8 +204,11 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
       // four concurrent analysts share one instance and usage stays accurate.
       const analysisProvider = providerFor("analysis");
       const analyses = new Map<AgentKey, AgentAnalysis>();
-      const classificationContext = buildClassificationContext(classification);
-      const userPrompt = `Question: ${question}${classificationContext}`;
+      // Per-agent emphasis (V0.2.1 Part 5): each analyst is told which of its
+      // OWN capabilities this question needs — contextual FULL/DEEP without
+      // removing independence (Part 22).
+      const userPrompt = (agent: AgentKey) =>
+        `Question: ${question}${buildAgentContext(agent, classification)}`;
 
       const runAnalyst = async (agent: AgentKey): Promise<void> => {
         const def = AGENTS[agent];
@@ -214,6 +222,7 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
           risks: [],
           missingInformation: [],
           confidence: 50,
+          evidenceQuality: "UNKNOWN",
         };
         queue.push({ type: "agent:start", agent, name: def.name, stage: "analyzing" });
 
@@ -221,7 +230,7 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
           const result = await callWithRetry(
             {
               system: `${def.system}\n\n${def.outputContract}`,
-              user: userPrompt,
+              user: userPrompt(agent),
               temperature: 0.5,
               maxTokens: MAX_ANALYSIS_TOKENS,
             },
@@ -249,6 +258,7 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
             analysis.risks = parsed.data.risks;
             analysis.missingInformation = parsed.data.missingInformation;
             analysis.confidence = parsed.data.confidence;
+            analysis.evidenceQuality = parsed.data.evidenceQuality;
             analysis.retries = result.retries;
           }
         } catch (err) {
@@ -423,7 +433,7 @@ function formatAnalysesForJudge(analyses: AgentAnalysis[]): string {
     .map((a) => {
       if (a.failed) return `## ${a.name} — FAILED\n(no response received)`;
       const lines = [
-        `## ${a.name} (stance: ${labelForStance(a.stance)}, confidence: ${a.confidence})`,
+        `## ${a.name} (stance: ${labelForStance(a.stance)}, confidence: ${a.confidence}, evidence quality: ${a.evidenceQuality ?? "UNKNOWN"})`,
         a.summary,
       ];
       if (a.keyPoints.length) lines.push(`Key points: ${a.keyPoints.map((k) => `"${k}"`).join("; ")}`);
@@ -473,6 +483,12 @@ function formatComparison(comparison: CouncilComparison | null): string {
   }
   if (comparison.uniqueInsights.length) {
     parts.push("UNIQUE INSIGHTS: " + comparison.uniqueInsights.join("; "));
+  }
+  if (comparison.strongestArgument) {
+    parts.push(`STRONGEST ARGUMENT: ${comparison.strongestArgument}`);
+  }
+  if (comparison.weakestArgument) {
+    parts.push(`WEAKEST ARGUMENT: ${comparison.weakestArgument}`);
   }
   return parts.join("\n") || "(no explicit agreements or disagreements identified)";
 }
@@ -529,6 +545,8 @@ async function runComparison(
     missingInformation: [],
     risks: [],
     uniqueInsights: [],
+    strongestArgument: "",
+    weakestArgument: "",
     stanceCounts: stanceCounts(analyses),
   });
 
@@ -560,6 +578,8 @@ async function runComparison(
       missingInformation: parsed.data.missingInformation,
       risks: parsed.data.risks,
       uniqueInsights: parsed.data.uniqueInsights,
+      strongestArgument: parsed.data.strongestArgument,
+      weakestArgument: parsed.data.weakestArgument,
       stanceCounts: {
         SUPPORT: 0,
         OPPOSE: 0,
@@ -649,6 +669,7 @@ async function runReassessment(
   const def = AGENTS.reassessor;
   const base: ReassessmentAnalysis = {
     summary: "",
+    shift: "UNCHANGED",
     hardened: [],
     weakened: [],
     positionChanges: [],
@@ -679,6 +700,7 @@ async function runReassessment(
     }
     return {
       summary: parsed.data.summary,
+      shift: parsed.data.shift,
       hardened: parsed.data.hardened,
       weakened: parsed.data.weakened,
       positionChanges: parsed.data.positionChanges,

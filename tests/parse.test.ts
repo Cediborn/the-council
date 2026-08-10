@@ -312,9 +312,59 @@ describe("validate", () => {
     }
   });
 
-  it("accepts a valid reassessment", () => {
+  it("accepts the V0.2.1 comparison fields and disagreement nature", () => {
+    const rich = {
+      agreements: [],
+      disagreements: [
+        {
+          topic: "feasibility",
+          positions: [{ agent: "Reasoner", position: "cheap" }, { agent: "Practicalist", position: "costly" }],
+          summary: "they answer different questions",
+          nature: "SUPERFICIAL",
+        },
+      ],
+      strongestArgument: "demand is real",
+      weakestArgument: "the brand comparison",
+      stanceCounts: { SUPPORT: 2 },
+    };
+    const result = validate(comparisonSchema, rich);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.disagreements[0].nature).toBe("SUPERFICIAL");
+      expect(result.data.strongestArgument).toBe("demand is real");
+      expect(result.data.weakestArgument).toBe("the brand comparison");
+    }
+  });
+
+  it("defaults new comparison fields safely when omitted", () => {
+    const result = validate(comparisonSchema, { disagreements: [], stanceCounts: {} });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.strongestArgument).toBe("");
+      expect(result.data.weakestArgument).toBe("");
+    }
+  });
+
+  it("catches invalid disagreement nature and strongest/weakest values", () => {
+    const messy = {
+      disagreements: [{ topic: "x", positions: [], summary: "y", nature: "SOMETIMES" }],
+      strongestArgument: "",
+      weakestArgument: 42,
+      stanceCounts: {},
+    };
+    const result = validate(comparisonSchema, messy);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data.disagreements[0].nature).toBe("FUNDAMENTAL");
+      expect(result.data.strongestArgument).toBe("");
+      expect(result.data.weakestArgument).toBe("");
+    }
+  });
+
+  it("accepts a valid reassessment with the V0.2.1 shift", () => {
     const good = {
       summary: "the stress test hardened the core argument",
+      shift: "WEAKENED",
       hardened: ["feasibility"],
       weakened: ["demand assumption"],
       positionChanges: [{ agent: "Skeptic", from: "OPPOSE", to: "CONDITIONAL" }],
@@ -322,7 +372,39 @@ describe("validate", () => {
     };
     const result = validate(reassessmentSchema, good);
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.data.positionChanges[0].to).toBe("CONDITIONAL");
+    if (result.ok) {
+      expect(result.data.positionChanges[0].to).toBe("CONDITIONAL");
+      expect(result.data.shift).toBe("WEAKENED");
+    }
+  });
+
+  it("defaults the reassessment shift to UNCHANGED and catches invalid values", () => {
+    const omitted = { summary: "nothing changed", judgeGuidance: "as before" };
+    const result = validate(reassessmentSchema, omitted);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.shift).toBe("UNCHANGED");
+
+    const invalid = { summary: "x", shift: "MAYBE", judgeGuidance: "y" };
+    const result2 = validate(reassessmentSchema, invalid);
+    expect(result2.ok).toBe(true);
+    if (result2.ok) expect(result2.data.shift).toBe("UNCHANGED");
+  });
+
+  it("defaults evidenceQuality to UNKNOWN and catches invalid values", () => {
+    const minimal = { summary: "An analysis.", stance: "SUPPORT", confidence: 60 };
+    const result = validate(agentAnalysisSchema, minimal);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.data.evidenceQuality).toBe("UNKNOWN");
+
+    const strong = { summary: "x", stance: "OPPOSE", confidence: 40, evidenceQuality: "STRONG" };
+    const result2 = validate(agentAnalysisSchema, strong);
+    expect(result2.ok).toBe(true);
+    if (result2.ok) expect(result2.data.evidenceQuality).toBe("STRONG");
+
+    const garbage = { summary: "x", stance: "NEUTRAL", confidence: 40, evidenceQuality: "TOTALLY" };
+    const result3 = validate(agentAnalysisSchema, garbage);
+    expect(result3.ok).toBe(true);
+    if (result3.ok) expect(result3.data.evidenceQuality).toBe("UNKNOWN");
   });
 
   it("defaults the missing whyThisVerdictWon field", () => {

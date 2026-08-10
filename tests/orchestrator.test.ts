@@ -39,6 +39,9 @@ const comparisonJson = JSON.stringify({
   agreements: [{ topic: "topic", agents: ["Reasoner"], summary: "agree" }],
   disagreements: [],
   sharedAssumptions: ["shared"],
+  // V0.2.1: strongest/weakest argument fields.
+  strongestArgument: "demand is real",
+  weakestArgument: "the brand comparison",
   stanceCounts: { SUPPORT: 3, OPPOSE: 0, CONDITIONAL: 0, NEUTRAL: 0, INSUFFICIENT: 0 },
 });
 
@@ -54,6 +57,7 @@ const daJson = JSON.stringify({
 
 const reassessmentJson = JSON.stringify({
   summary: "the stress test hardened the core argument",
+  shift: "WEAKENED",
   hardened: ["core feasibility argument"],
   weakened: ["the demand assumption"],
   positionChanges: [{ agent: "Skeptic", from: "OPPOSE", to: "CONDITIONAL" }],
@@ -144,6 +148,9 @@ describe("runCouncil — FULL mode", () => {
     expect(comparison?.type).toBe("comparison");
     if (comparison?.type === "comparison") {
       expect(comparison.comparison.agreements).toHaveLength(1);
+      // V0.2.1: strongest/weakest argument flow through the comparison event.
+      expect(comparison.comparison.strongestArgument).toBe("demand is real");
+      expect(comparison.comparison.weakestArgument).toBe("the brand comparison");
     }
 
     const verdict = events.find((e) => e.type === "verdict");
@@ -177,6 +184,8 @@ describe("runCouncil — DEEP mode", () => {
     if (reassessment?.type === "reassessment:done") {
       expect(reassessment.analysis.hardened).toContain("core feasibility argument");
       expect(reassessment.analysis.positionChanges[0].to).toBe("CONDITIONAL");
+      // V0.2.1: the stress-test shift flows through (Part 21).
+      expect(reassessment.analysis.shift).toBe("WEAKENED");
     }
 
     const verdict = events.find((e) => e.type === "verdict");
@@ -279,6 +288,43 @@ describe("runCouncil — resilience", () => {
       expect(verdict.verdict.degraded).toBe(true);
       expect(verdict.verdict.verdict).toBe("INSUFFICIENT_INFORMATION");
     }
+  });
+
+  it("injects per-agent capability emphasis into every analytical prompt (V0.2.1 Part 5)", async () => {
+    const calls: { system: string; user: string }[] = [];
+    const provider: ModelProvider = {
+      id: "mock",
+      model: "mock-model",
+      async chat(input: ProviderChatInput): Promise<ProviderChatResult> {
+        calls.push({ system: input.system, user: input.user });
+        if (input.system.includes("JUDGE")) return { content: verdictJson, usage: { inputTokens: 10, outputTokens: 20 } };
+        if (input.system.includes("COMPARER")) return { content: comparisonJson, usage: { inputTokens: 10, outputTokens: 20 } };
+        return { content: agentJson(), usage: { inputTokens: 10, outputTokens: 20 } };
+      },
+    };
+
+    await collect(runCouncil({ mode: "FULL", question: "Should I buy this phone?", provider }));
+
+    const analytical = calls.filter((c) => !c.system.includes("JUDGE") && !c.system.includes("COMPARER"));
+    expect(analytical).toHaveLength(4);
+    // Every analyst sees the classification label and its own emphasis.
+    for (const c of analytical) {
+      expect(c.user).toContain("Decision");
+      expect(c.user).toMatch(/Your capabilities most relevant here/);
+    }
+    // The skeptic is told its assumption-testing lens matters for a decision.
+    const skeptic = analytical.find((c) => c.system.includes("SKEPTIC"));
+    expect(skeptic?.user).toContain("Assumption testing");
+    // The perspective agent is told its alternative-perspectives lens is relevant.
+    const perspective = analytical.find((c) => c.system.includes("PERSPECTIVE"));
+    expect(perspective?.user).toContain("Alternative perspectives");
+
+    // A purely mathematical question has no overlap with the perspective lens,
+    // so it gets the honest "keep it brief" emphasis instead.
+    calls.length = 0;
+    await collect(runCouncil({ mode: "FULL", question: "Why is the derivative of sqrt(x) equal to 1/(2sqrt(x))?", provider }));
+    const mathPerspective = calls.find((c) => c.system.includes("PERSPECTIVE"));
+    expect(mathPerspective?.user).toMatch(/not the central one/i);
   });
 
   it("honors aborted signals", async () => {
