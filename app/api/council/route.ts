@@ -1,6 +1,6 @@
 import { councilRequestSchema } from "@/lib/council/schemas";
 import { CouncilRunError, runCouncil } from "@/lib/council/orchestrator";
-import type { CouncilEvent } from "@/lib/council/types";
+import type { AgentAnalysis, AgentKey, CouncilEvent } from "@/lib/council/types";
 
 /**
  * POST /api/council
@@ -20,7 +20,12 @@ function sse(event: CouncilEvent): string {
 }
 
 export async function POST(req: Request) {
-  let parsed: { question: string; mode: "QUICK" | "FULL" | "DEEP" };
+  let parsed: {
+    question: string;
+    mode: "QUICK" | "FULL" | "DEEP";
+    sessionId?: string;
+    resume?: { agents: AgentKey[]; analyses: AgentAnalysis[]; retryAgent: AgentKey };
+  };
   try {
     const body = await req.json().catch(() => ({}));
     const result = councilRequestSchema.safeParse(body);
@@ -50,15 +55,25 @@ export async function POST(req: Request) {
       req.signal.addEventListener("abort", onAbort);
 
       try {
+        // V0.2.2.2 (Part 5): a resumed run keeps the ORIGINAL sessionId so the
+        // client can merge events back into the same session.
         const sessionId =
-          typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          parsed.sessionId ??
+          (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
             ? crypto.randomUUID()
-            : `s-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+            : `s-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
         for await (const event of runCouncil({
           mode: parsed.mode,
           question: parsed.question,
           signal: abortController.signal,
           sessionId,
+          resume: parsed.resume
+            ? {
+                agents: parsed.resume.agents,
+                analyses: parsed.resume.analyses,
+                retryAgent: parsed.resume.retryAgent,
+              }
+            : undefined,
         })) {
           send(event);
         }

@@ -4,8 +4,11 @@ import {
   buildAgentContext,
   buildClassificationContext,
   classifyQuestion,
+  judgeOutputContract,
+  judgeSystemFor,
   selectQuickAgents,
 } from "@/lib/council/agents";
+import { verdictsForType } from "@/lib/council/types";
 
 describe("classifyQuestion", () => {
   it("detects mathematical questions", () => {
@@ -201,6 +204,44 @@ describe("agent prompt contracts (V0.2.1 Parts 6-11, 16, 26, 27)", () => {
     expect(s).toMatch(/be willing to say no/i);
     expect(s).toMatch(/do NOT soften every conclusion/i);
     expect(s).toMatch(/never count stances/i);
+  });
+
+  it("V0.2.2.2: the Judge must give provisional verdicts instead of escaping into INSUFFICIENT_INFORMATION", () => {
+    const s = AGENTS.judge.system;
+    expect(s).toMatch(/DO NOT use INSUFFICIENT_INFORMATION as an escape/i);
+    expect(s).toMatch(/provisional verdict/i);
+    expect(s).toMatch(/informationSufficiency/i);
+    expect(s).toMatch(/criticalUnknowns/i);
+  });
+
+  it("V0.2.2.2: the Judge output contract is type-dependent (Part 6)", () => {
+    const business = judgeOutputContract("business");
+    expect(business).toMatch(/"BUILD_MVP"/);
+    expect(business).toMatch(/"PIVOT"/);
+    expect(business).toMatch(/"DO_NOT_BUILD"/);
+    expect(business).not.toMatch(/"REFINE"/);
+
+    const explanation = judgeOutputContract("explanation");
+    expect(explanation).toMatch(/"REFINE"/);
+    expect(explanation).not.toMatch(/"PIVOT"/);
+    expect(explanation).not.toMatch(/"BUILD_MVP"/);
+
+    const math = judgeOutputContract("mathematical");
+    expect(math).toMatch(/"REJECT"/);
+  });
+
+  it("V0.2.2.2: judgeSystemFor lists the categories allowed for the question type", () => {
+    expect(judgeSystemFor("business")).toMatch(/BUILD_MVP/);
+    expect(judgeSystemFor("explanation")).not.toMatch(/BUILD_MVP/);
+    expect(judgeSystemFor("explanation")).toMatch(/REFINE/);
+  });
+
+  it("V0.2.2.2: verdictsForType maps product vs general sets (Part 13)", () => {
+    expect(verdictsForType("business")).toContain("BUILD_MVP");
+    expect(verdictsForType("decision")).toContain("PIVOT");
+    expect(verdictsForType("explanation")).not.toContain("BUILD_MVP");
+    expect(verdictsForType("explanation")).toContain("REFINE");
+    expect(verdictsForType("mathematical")).toContain("INSUFFICIENT_INFORMATION");
   });
 
   it("the Comparer must name the strongest/weakest argument and classify disagreement nature", () => {

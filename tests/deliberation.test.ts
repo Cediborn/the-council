@@ -182,6 +182,28 @@ describe("agentVisual", () => {
     expect(agentVisual(events, "reasoner").state).toBe("COMPLETE");
     expect(agentVisual(events, "reasoner").statusText).toContain("partial");
   });
+
+  it("V0.2.2.2: attributes TIMED OUT distinctly from FAILED", () => {
+    const timedOut: CouncilEvent[] = [
+      {
+        type: "agent:done",
+        analysis: { ...analysis, failed: true, outcome: "TIMED_OUT", error: "timeout after 60s" },
+        stage: "analyzing",
+      },
+    ];
+    expect(agentVisual(timedOut, "reasoner").state).toBe("FAILED");
+    expect(agentVisual(timedOut, "reasoner").chip).toBe("TIMED OUT");
+    expect(agentVisual(timedOut, "reasoner").statusText).toMatch(/timed out/i);
+  });
+
+  it("V0.2.2.2: a member that never started after the run ended is NOT_STARTED", () => {
+    const events: CouncilEvent[] = [
+      { type: "agent:done", analysis, stage: "analyzing" },
+      { type: "verdict", verdict: { verdict: "BUILD" } as never, usage: {} as never, stage: "complete" },
+    ];
+    expect(agentVisual(events, "skeptic").chip).toBe("NOT STARTED");
+    expect(agentVisual(events, "skeptic").statusText).toMatch(/never started/i);
+  });
 });
 
 describe("hasAnalysis", () => {

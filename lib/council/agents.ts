@@ -1,8 +1,10 @@
-import type {
-  AgentKey,
-  Capability,
-  QuestionClassification,
-  QuestionType,
+import {
+  verdictsForType,
+  type AgentKey,
+  type Capability,
+  type QuestionClassification,
+  type QuestionType,
+  type VerdictCategory,
 } from "./types";
 
 /**
@@ -280,40 +282,92 @@ Work through this internal process before concluding:
 Consider: evidence quality, reasoning quality, assumptions, uncertainty, severity of identified risks, relevance, internal consistency, strength of counterarguments.
 A strong minority argument must be able to outweigh a weak majority.
 Never count stances: "three agents said yes" is NOT a reason to say yes. Evaluate the arguments themselves.
-Never force a confident answer when the information is inadequate — use INSUFFICIENT_INFORMATION.
 
-Be willing to say NO: REJECT, RECONSIDER, or INSUFFICIENT_INFORMATION when the arguments warrant it — including "your premise is unsupported" or "this idea is weak." Do NOT soften every conclusion into "this has potential, but there are some considerations...". Be respectful and honest. Equally, do NOT manufacture doubt: if the case is genuinely strong, say so.
+INFORMATION SUFFICIENCY: always assess how complete and reliable the available information is — HIGH, MEDIUM, or LOW — and report it in "informationSufficiency". If information is incomplete, DO NOT use INSUFFICIENT_INFORMATION as an escape from deciding. Instead give the most defensible PROVISIONAL verdict the available reasoning supports: set informationSufficiency to LOW or MEDIUM, list what is still unknown in "criticalUnknowns", and explain in "whatWouldChangeVerdict" what evidence would firm up the decision. Only return INSUFFICIENT_INFORMATION when making ANY recommendation would be genuinely impossible or irresponsible.
+
+Be willing to say NO — including "your premise is unsupported" or "this idea is weak" — whenever the arguments warrant it. Do NOT soften every conclusion into "this has potential, but there are some considerations...". Be respectful and honest. Equally, do NOT manufacture doubt: if the case is genuinely strong, say so.
 
 Confidence calibration: confidence reflects how strongly the AVAILABLE REASONING supports the verdict — not how confident the analysis sounds. Strong evidence and agreement: 85-95%. Solid reasoning with some conflicting arguments: 55-75%. Conflicting arguments and limited information: 40-55%. Very little evidence: below 40%. Never inflate confidence to sound certain.
 
-Verdict categories:
-- BUILD: evidence strongly supports proceeding.
-- REFINE: idea/problem promising, but changes are necessary.
-- VALIDATE: idea may be good, but important assumptions need real-world evidence.
-- RECONSIDER: significant weaknesses exist; the approach should probably change.
-- REJECT: the proposal is fundamentally weak under the available information.
-- INSUFFICIENT_INFORMATION: not enough information to responsibly conclude.
-
-In "whyThisVerdictWon", state explicitly which argument (by reasoning quality) won — e.g. "The Skeptic's cost-risk analysis outweighed the majority support because the majority leaned on an unverified assumption about demand." A minority argument must be able to win if it exposes a serious flaw.`,
+The verdict categories available for THIS question are listed in your output contract — the Council is general-purpose, so the category set depends on the question type. In "whyThisVerdictWon", state explicitly which argument (by reasoning quality) won — e.g. "The Skeptic's cost-risk analysis outweighed the majority support because the majority leaned on an unverified assumption about demand." A minority argument must be able to win if it exposes a serious flaw.`,
   outputContract: `${OUTPUT_CONTRACT_COMMON}
-Your JSON must have exactly these fields:
+Your JSON must have exactly these fields — the "verdict" value must be one of the categories listed for this question (see below):
 {
-  "verdict": "BUILD" | "REFINE" | "VALIDATE" | "RECONSIDER" | "REJECT" | "INSUFFICIENT_INFORMATION",
+  "verdict": "(see the category set for this question)",
   "score": 0.0-10.0,
   "confidence": 0-100,
+  "informationSufficiency": "HIGH" | "MEDIUM" | "LOW",
   "summary": "2-4 sentence verdict summary",
-  "strongestArgumentFor": "...",
-  "strongestArgumentAgainst": "...",
-  "keyAgreements": ["..."],
-  "keyDisagreements": ["..."],
-  "criticalAssumptions": ["..."],
-  "criticalRisks": ["..."],
+  "keyReasons": ["the deciding reasons, 2-4 items"],
+  "agreements": ["points the Council agrees on"],
+  "disagreements": ["points the Council disagrees on"],
+  "criticalUnknowns": ["what is still unknown and would change the verdict"],
+  "assumptions": ["critical assumptions"],
+  "risks": ["critical risks"],
   "recommendedAction": "...",
-  "whatWouldChangeTheVerdict": ["..."],
+  "whatWouldChangeVerdict": ["what evidence would change this verdict"],
   "reasoning": "2-4 sentences of judicial reasoning",
-  "whyThisVerdictWon": "which argument won on the merits, and why (not a vote count)"
+  "whyThisVerdictWon": "which argument won on the merits, and why (not a vote count)",
+  "strongestArgumentFor": "...",
+  "strongestArgumentAgainst": "..."
 }`,
 };
+
+/** Human descriptions for every verdict category (both sets). */
+export const VERDICT_CATEGORY_DESCRIPTIONS: Record<VerdictCategory, string> = {
+  BUILD: "BUILD — the evidence strongly supports proceeding.",
+  BUILD_MVP: "BUILD_MVP — the problem is worth validating; proceed with a small, cheap test of the core idea.",
+  PIVOT: "PIVOT — the current approach is weak; a different direction is more defensible.",
+  DO_NOT_BUILD: "DO_NOT_BUILD — the proposal is fundamentally weak under the available information.",
+  REFINE: "REFINE — the idea or problem is promising, but changes are necessary.",
+  VALIDATE: "VALIDATE — the idea may be good, but important assumptions need real-world evidence.",
+  RECONSIDER: "RECONSIDER — significant weaknesses exist; the approach should probably change.",
+  REJECT: "REJECT — the proposal is fundamentally weak under the available information.",
+  INSUFFICIENT_INFORMATION:
+    "INSUFFICIENT_INFORMATION — making any recommendation would be genuinely impossible or irresponsible with the available information (use extremely rarely — a provisional verdict is almost always more honest).",
+};
+
+/** The verdict category list for a question type, formatted for the prompt. */
+export function verdictCategoriesForPrompt(type: QuestionType): string {
+  return verdictsForType(type)
+    .map((c) => `- ${VERDICT_CATEGORY_DESCRIPTIONS[c]}`)
+    .join("\n");
+}
+
+/**
+ * V0.2.2.2: per-question-type Judge output contract — the model is told the
+ * exact verdict categories it may return for THIS question, so a business
+ * question never returns REFINE and an explanation question never returns PIVOT.
+ */
+export function judgeOutputContract(type: QuestionType): string {
+  const verdicts = verdictsForType(type).map((v) => `"${v}"`).join(" | ");
+  return `${OUTPUT_CONTRACT_COMMON}
+Your JSON must have exactly these fields:
+{
+  "verdict": ${verdicts},
+  "score": 0.0-10.0,
+  "confidence": 0-100,
+  "informationSufficiency": "HIGH" | "MEDIUM" | "LOW",
+  "summary": "2-4 sentence verdict summary",
+  "keyReasons": ["the deciding reasons, 2-4 items"],
+  "agreements": ["points the Council agrees on"],
+  "disagreements": ["points the Council disagrees on"],
+  "criticalUnknowns": ["what is still unknown and would change the verdict"],
+  "assumptions": ["critical assumptions"],
+  "risks": ["critical risks"],
+  "recommendedAction": "...",
+  "whatWouldChangeVerdict": ["what evidence would change this verdict"],
+  "reasoning": "2-4 sentences of judicial reasoning",
+  "whyThisVerdictWon": "which argument won on the merits, and why (not a vote count)",
+  "strongestArgumentFor": "...",
+  "strongestArgumentAgainst": "..."
+}`;
+}
+
+/** Full Judge system prompt for a question type (role + available categories). */
+export function judgeSystemFor(type: QuestionType): string {
+  return `${JUDGE.system}\n\nVerdict categories available for this question (${TYPE_SPECS[type]?.label ?? "General"}):\n${verdictCategoriesForPrompt(type)}`;
+}
 
 export const AGENTS: Record<AgentKey, AgentDef> = {
   reasoner: REASONER,

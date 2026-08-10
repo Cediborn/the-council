@@ -4,6 +4,8 @@ import {
   buildAgentContext,
   buildClassificationContext,
   classifyQuestion,
+  judgeOutputContract,
+  judgeSystemFor,
   labelForStance,
   selectQuickAgents,
 } from "./agents";
@@ -15,20 +17,22 @@ import {
   reassessmentSchema,
   verdictSchema,
 } from "./schemas";
-import { resolveProviderForStage } from "./providers";
+import { isTimeoutError, resolveProviderForStage } from "./providers";
 import type { ModelProvider, ProviderChatInput, ProviderStage } from "./providers";
+import { synthesizeProvisionalVerdict } from "./synthesizer";
 import { recordUsage } from "./usage";
-import type {
-  AgentAnalysis,
-  AgentKey,
-  CouncilComparison,
-  CouncilEvent,
-  CouncilMode,
-  CouncilUsage,
-  CouncilVerdict,
-  DevilAdvocateAnalysis,
-  QuestionClassification,
-  ReassessmentAnalysis,
+import {
+  verdictsForType,
+  type AgentAnalysis,
+  type AgentKey,
+  type CouncilComparison,
+  type CouncilEvent,
+  type CouncilMode,
+  type CouncilUsage,
+  type CouncilVerdict,
+  type DevilAdvocateAnalysis,
+  type QuestionClassification,
+  type ReassessmentAnalysis,
 } from "./types";
 
 /**
@@ -50,8 +54,10 @@ import type {
  * Council: the Judge is told an agent failed and must reduce confidence.
  *
  * The Judge NEVER votes. If the Judge fails, the Council does NOT count
- * stances — it returns an explicitly degraded INSUFFICIENT_INFORMATION
- * verdict (Part 11).
+ * stances and does NOT fabricate a normal verdict: it returns an explicitly
+ * PROVISIONAL verdict synthesized deterministically from the surviving
+ * analyses (V0.2.2.2), or the honest degraded INSUFFICIENT_INFORMATION when
+ * there is nothing to synthesize.
  *
  * Implementation note: the pipeline runs inside a "pump" task that pushes
  * events into a shared queue; the async generator drains the queue. This keeps
@@ -107,18 +113,36 @@ const VERDICT_KEYS = [
   "verdict",
   "score",
   "confidence",
+  "informationSufficiency",
   "summary",
-  "strongestArgumentFor",
-  "strongestArgumentAgainst",
-  "keyAgreements",
-  "keyDisagreements",
-  "criticalAssumptions",
-  "criticalRisks",
+  "keyReasons",
+  "agreements",
+  "disagreements",
+  "criticalUnknowns",
+  "assumptions",
+  "risks",
   "recommendedAction",
-  "whatWouldChangeTheVerdict",
+  "whatWouldChangeVerdict",
   "reasoning",
   "whyThisVerdictWon",
+  "strongestArgumentFor",
+  "strongestArgumentAgainst",
 ];
+
+/**
+ * V0.2.2.2 (Part 5): a resumable session — the client re-submits the same
+ * question/mode/sessionId together with the completed analyses and the failed
+ * member to re-run. Only that member is re-called; the pipeline then continues
+ * from the comparison stage onward. Stateless on purpose (safe on serverless).
+ */
+export interface CouncilRunResume {
+  /** The exact agent list of the original run (QUICK must not be recomputed). */
+  agents: AgentKey[];
+  /** Every analysis from the previous attempt, including the failed one. */
+  analyses: AgentAnalysis[];
+  /** The member to re-run. */
+  retryAgent: AgentKey;
+}
 
 export interface CouncilRunOptions {
   mode: CouncilMode;
@@ -127,6 +151,8 @@ export interface CouncilRunOptions {
   signal?: AbortSignal;
   /** V0.2: stable session id (Part 18). Generated when omitted. */
   sessionId?: string;
+  /** V0.2.2.2: resume a previous session by re-running one failed member. */
+  resume?: CouncilRunResume;
 }
 
 export class CouncilRunError extends Error {
@@ -179,17 +205,45 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
     success: false,
     questionLength: question.length,
     startedAt: new Date().toISOString(),
+    // V0.2.2.2: per-stage / per-analyst timing (Part 9).
+    stageDurations: {
+      analysisMs: 0,
+      comparisonMs: 0,
+      devilsAdvocateMs: 0,
+      reassessmentMs: 0,
+      judgeMs: 0,
+    },
+    agentDurations: {},
   };
-
-  const analyticalAgents: AgentKey[] =
-    mode === "QUICK" ? selectQuickAgents(question) : ANALYTICAL_AGENTS;
 
   const queue: CouncilEvent[] = [];
   let pipelineDone = false;
   let pipelineError: unknown = null;
 
+  /** V0.2.2.2: wall-clock timing per pipeline stage (Part 9). */
+  const timed = async <T>(
+    key: keyof CouncilUsage["stageDurations"],
+    fn: () => Promise<T>,
+  ): Promise<T> => {
+    const t0 = Date.now();
+    try {
+      return await fn();
+    } finally {
+      usage.stageDurations[key] += Date.now() - t0;
+    }
+  };
+
   const pump = (async () => {
     try {
+      // V0.2.2.2 (Part 5): a resumed session keeps the EXACT agent set of the
+      // original run and only re-runs the failed member(s).
+      const resumed = opts.resume;
+      const analyticalAgents: AgentKey[] = resumed
+        ? resumed.agents
+        : mode === "QUICK"
+          ? selectQuickAgents(question)
+          : ANALYTICAL_AGENTS;
+
       queue.push({
         type: "convened",
         sessionId,
@@ -204,6 +258,14 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
       // four concurrent analysts share one instance and usage stays accurate.
       const analysisProvider = providerFor("analysis");
       const analyses = new Map<AgentKey, AgentAnalysis>();
+      if (resumed) {
+        for (const a of resumed.analyses) analyses.set(a.agent, a);
+      }
+      // Normal runs analyse every member concurrently. Resumed runs analyse
+      // ONLY the member being retried.
+      const analystsToRun = resumed
+        ? analyticalAgents.filter((a) => a === resumed.retryAgent)
+        : analyticalAgents;
       // Per-agent emphasis (V0.2.1 Part 5): each analyst is told which of its
       // OWN capabilities this question needs — contextual FULL/DEEP without
       // removing independence (Part 22).
@@ -225,6 +287,7 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
           evidenceQuality: "UNKNOWN",
         };
         queue.push({ type: "agent:start", agent, name: def.name, stage: "analyzing" });
+        const analystStart = Date.now();
 
         try {
           const result = await callWithRetry(
@@ -261,19 +324,24 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
             analysis.evidenceQuality = parsed.data.evidenceQuality;
             analysis.retries = result.retries;
           }
+          analysis.outcome = "COMPLETED";
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           analysis.failed = true;
           analysis.error = message;
+          // V0.2.2.2 (Part 10): attribute TIMED_OUT distinctly from FAILED.
+          // A user-initiated abort is NOT a timeout.
+          analysis.outcome = signal?.aborted ? "FAILED" : isTimeoutError(err) ? "TIMED_OUT" : "FAILED";
           usage.failedAgentCalls += 1;
         }
 
+        usage.agentDurations[agent] = Date.now() - analystStart;
         analyses.set(agent, analysis);
         queue.push({ type: "agent:done", analysis, stage: "analyzing" });
       };
 
       // All analysts run concurrently; events arrive as each one finishes.
-      await Promise.all(analyticalAgents.map((agent) => runAnalyst(agent)));
+      await timed("analysisMs", () => Promise.all(analystsToRun.map((agent) => runAnalyst(agent))));
 
       const completedAnalyses = analyticalAgents
         .map((agent) => analyses.get(agent))
@@ -309,13 +377,15 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
       if (mode !== "QUICK") {
         const comparisonProvider = providerFor("comparison");
         queue.push({ type: "stage", stage: "comparing" });
-        comparison = await runComparison(
-          completedAnalyses,
-          question,
-          classification,
-          comparisonProvider,
-          signal,
-          usage,
+        comparison = await timed("comparisonMs", () =>
+          runComparison(
+            completedAnalyses,
+            question,
+            classification,
+            comparisonProvider,
+            signal,
+            usage,
+          ),
         );
         queue.push({ type: "comparison", comparison, stage: "comparing" });
         bailIfAborted(null, null);
@@ -326,14 +396,16 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
       if (mode === "DEEP") {
         const daProvider = providerFor("devils_advocate");
         queue.push({ type: "stage", stage: "devils_advocate" });
-        devilsAdvocate = await runDevilsAdvocate(
-          completedAnalyses,
-          comparison,
-          question,
-          classification,
-          daProvider,
-          signal,
-          usage,
+        devilsAdvocate = await timed("devilsAdvocateMs", () =>
+          runDevilsAdvocate(
+            completedAnalyses,
+            comparison,
+            question,
+            classification,
+            daProvider,
+            signal,
+            usage,
+          ),
         );
         queue.push({ type: "da:done", analysis: devilsAdvocate, stage: "devils_advocate" });
         bailIfAborted(devilsAdvocate, null);
@@ -344,15 +416,17 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
       if (mode === "DEEP" && devilsAdvocate && !devilsAdvocate.failed) {
         const reassessmentProvider = providerFor("reassessment");
         queue.push({ type: "stage", stage: "reassessing" });
-        reassessment = await runReassessment(
-          completedAnalyses,
-          comparison,
-          devilsAdvocate,
-          question,
-          classification,
-          reassessmentProvider,
-          signal,
-          usage,
+        reassessment = await timed("reassessmentMs", () =>
+          runReassessment(
+            completedAnalyses,
+            comparison,
+            devilsAdvocate,
+            question,
+            classification,
+            reassessmentProvider,
+            signal,
+            usage,
+          ),
         );
         queue.push({ type: "reassessment:done", analysis: reassessment, stage: "reassessing" });
         bailIfAborted(devilsAdvocate, reassessment);
@@ -361,16 +435,18 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
       // ── Stage 5: the Judge ────────────────────────────────────────────────
       const judgeProvider = providerFor("judge");
       queue.push({ type: "stage", stage: "judging" });
-      const verdict = await runJudge(
-        completedAnalyses,
-        comparison,
-        devilsAdvocate,
-        reassessment,
-        question,
-        classification,
-        judgeProvider,
-        signal,
-        usage,
+      const verdict = await timed("judgeMs", () =>
+        runJudge(
+          completedAnalyses,
+          comparison,
+          devilsAdvocate,
+          reassessment,
+          question,
+          classification,
+          judgeProvider,
+          signal,
+          usage,
+        ),
       );
 
       usage.durationMs = Date.now() - startedAt;
@@ -726,35 +802,6 @@ function formatDevilsAdvocateForJudge(da: DevilAdvocateAnalysis): string {
   ].join("\n");
 }
 
-/**
- * Safe fallback verdict — used ONLY when the model cannot produce a valid
- * verdict even after retries, or the Judge call itself fails. It is honest
- * about being degraded and NEVER counts stances (Part 11): the Council does
- * not vote, and a broken Judge is not a reason to fabricate a verdict.
- */
-function fallbackVerdict(analyses: AgentAnalysis[]): CouncilVerdict {
-  const failedCount = analyses.filter((a) => a.failed).length;
-  return {
-    verdict: "INSUFFICIENT_INFORMATION",
-    score: 0,
-    confidence: Math.max(0, 30 - failedCount * 10),
-    summary: `The Council could not complete its final evaluation — the Judge failed to produce a structured verdict${
-      failedCount > 0 ? ` and ${failedCount} analytical agent(s) also failed` : ""
-    }. No verdict is fabricated from the surviving stances.`,
-    strongestArgumentFor: analyses.find((a) => !a.failed)?.keyPoints[0] ?? "Unknown.",
-    strongestArgumentAgainst: "Unknown — the Council could not weigh the arguments.",
-    keyAgreements: [],
-    keyDisagreements: [],
-    criticalAssumptions: [],
-    criticalRisks: [],
-    recommendedAction: "Retry the Council, or check that the model provider is healthy.",
-    whatWouldChangeTheVerdict: ["A working Judge response."],
-    reasoning: "Degraded fallback — the Judge did not respond with a valid verdict.",
-    whyThisVerdictWon: "No argument won: this is an explicitly degraded result, not a judgment.",
-    degraded: true,
-  };
-}
-
 async function runJudge(
   analyses: AgentAnalysis[],
   comparison: CouncilComparison | null,
@@ -779,9 +826,12 @@ async function runJudge(
       : "";
 
   try {
+    // V0.2.2.2: the Judge system prompt + output contract are generated for the
+    // question's TYPE so only the allowed verdict categories are on the table
+    // (business questions cannot return REFINE; explanations cannot return PIVOT).
     const result = await callWithRetry(
       {
-        system: `${def.system}\n\n${def.outputContract}`,
+        system: `${judgeSystemFor(classification.type)}\n\n${judgeOutputContract(classification.type)}`,
         user: `Question: ${question}${buildClassificationContext(classification)}\n\nIndependent analyses:\n${formatAnalysesForJudge(analyses)}\n\nComparison:\n${formatComparison(comparison)}${daSection}${reassessmentSection}${failedNote}`,
         temperature: 0.3,
         maxTokens: MAX_VERDICT_TOKENS,
@@ -797,8 +847,13 @@ async function runJudge(
       verdictSchema,
       unwrapNestedObject(parseJsonObject(result.content), "summary", VERDICT_KEYS),
     );
-    if (!parsed.ok) {
-      return fallbackVerdict(analyses);
+    // V0.2.2.2 (Parts 1-2 + 6): a Judge that cannot produce a valid verdict —
+    // malformed output, or a category outside the set allowed for THIS question
+    // type — is replaced by an explicit PROVISIONAL verdict synthesized from
+    // the surviving analyses. Never by stance counting, never a dead end.
+    if (!parsed.ok || !verdictsForType(classification.type).includes(parsed.data.verdict)) {
+      usage.failedAgentCalls += 1;
+      return synthesizeProvisionalVerdict({ question, questionType: classification.type, analyses, comparison });
     }
     return {
       ...parsed.data,
@@ -813,7 +868,7 @@ async function runJudge(
     if (signal?.aborted) {
       throw new CouncilRunError("Council cancelled.", analyses, devilsAdvocate, reassessment);
     }
-    return fallbackVerdict(analyses);
+    return synthesizeProvisionalVerdict({ question, questionType: classification.type, analyses, comparison });
   }
 }
 

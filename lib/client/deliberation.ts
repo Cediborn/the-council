@@ -103,7 +103,15 @@ export function agentVisual(events: CouncilEvent[], agent: AgentKey): AgentVisua
   );
 
   if (doneEvent?.analysis.failed) {
-    return { state: "FAILED", statusText: "Failed — the Council continued without it", chip: "FAILED" };
+    // V0.2.2.2 (Part 10): TIMED OUT is attributed distinctly from FAILED.
+    const timedOut = doneEvent.analysis.outcome === "TIMED_OUT";
+    return {
+      state: "FAILED",
+      statusText: timedOut
+        ? "Timed out — the Council continued without it"
+        : "Failed — the Council continued without it",
+      chip: timedOut ? "TIMED OUT" : "FAILED",
+    };
   }
   if (doneEvent) {
     const degraded = doneEvent.analysis.degraded;
@@ -115,6 +123,11 @@ export function agentVisual(events: CouncilEvent[], agent: AgentKey): AgentVisua
   }
   if (events.some((e) => e.type === "agent:start" && e.agent === agent)) {
     return { state: "ACTIVE", statusText: `${AGENT_DOING[agent] ?? "Analyzing"}…`, chip: "ANALYZING" };
+  }
+  // V0.2.2.2: if the run has already ended, a member that never started is
+  // NOT_STARTED (e.g. cancelled mid-run) — never invented as a result.
+  if (events.some((e) => e.type === "verdict" || e.type === "error")) {
+    return { state: "WAITING", statusText: "Never started", chip: "NOT STARTED" };
   }
   return { state: "WAITING", statusText: "Awaiting assignment", chip: "WAITING" };
 }

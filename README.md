@@ -1,4 +1,4 @@
-# COUNCIL — V0.2.2.1
+# COUNCIL — V0.2.2.2
 
 A general-purpose, multi-agent **deliberation engine**. Ask it anything —
 everyday decisions, school questions, business ideas, code questions, life
@@ -45,8 +45,45 @@ The four analytical agents:
 - **Perspective** — alternative framings and overlooked options.
 
 The **Judge** does not vote. It weighs argument quality — a strong minority
-argument can outweigh a weak majority. Verdicts: `BUILD`, `REFINE`,
-`VALIDATE`, `RECONSIDER`, `REJECT`, `INSUFFICIENT_INFORMATION`.
+argument can outweigh a weak majority. The verdict set depends on the question
+type (V0.2.2.2): product/business-flavoured questions (business, decision,
+planning, comparison, troubleshooting, creative) get `BUILD`, `BUILD_MVP`,
+`PIVOT`, `DO_NOT_BUILD`; everything else keeps `BUILD`, `REFINE`, `VALIDATE`,
+`RECONSIDER`, `REJECT`. `INSUFFICIENT_INFORMATION` is shared but rare.
+
+## V0.2.2.2 changes (pipeline & UX fix)
+
+- **The Judge stops copping out.** `INSUFFICIENT_INFORMATION` is no longer an
+escape hatch: the Judge must always assess information sufficiency
+(`HIGH`/`MEDIUM`/`LOW`) and, when information is incomplete, deliver the most
+defensible **provisional verdict** with `criticalUnknowns` and
+`whatWouldChangeVerdict`. INSUFFICIENT_INFORMATION is reserved for when any
+recommendation would be genuinely irresponsible.
+- **Judge failure never hides the Council's work.** When the Judge cannot
+produce a valid verdict (timeout, malformed output, provider failure), a
+deterministic **synthesizer** (`lib/council/synthesizer.ts`) reads the
+surviving analyses (key points, risks, missing info, comparison) and produces
+an explicitly labelled **PROVISIONAL** verdict — never stance-counted, never a
+full `BUILD`. Every completed member analysis stays fully expandable on every
+surface (verdict, degraded, error, cancelled) via the shared
+`ExpandableAnalysis` component.
+- **Explicit pipeline phases.** The client state machine now has IDLE →
+ANALYZING → PARTIAL_RESULTS → COUNCIL_COMPLETE → JUDGING → COMPLETE, plus the
+first-class terminal states DEGRADED (provisional verdict), FAILED, and
+CANCELLED. Every state resolves; none dead-ends.
+- **Per-member retry (resumable sessions).** A failed member can be retried
+individually: the client re-submits the same session with its completed
+analyses (stateless — safe on serverless), the server re-runs only that
+member, and the pipeline continues from comparison onward.
+- **Outcome attribution.** Members are recorded and displayed as COMPLETED /
+FAILED / TIMED OUT / NOT STARTED — a timeout is never conflated with a
+failure, and nothing is ever invented.
+- **Persistence (TEST 6).** Completed sessions are saved to localStorage
+(last 10, size-capped, versioned key) and appear as **Previous deliberations**
+on the home screen — a refresh never loses a finished verdict.
+- **Per-stage durations.** Usage now records analysis/comparison/stress-test/
+reassessment/judge wall-clock times plus per-agent times, surfaced in the
+verdict meta line.
 
 ## V0.2.1 changes (intelligence & reasoning)
 
@@ -85,12 +122,12 @@ argument can outweigh a weak majority. Verdicts: `BUILD`, `REFINE`,
 ## V0.2.2.1 changes (the chamber refinement)
 
 - **Judge failure is now unmistakable.** When the Judge cannot safely produce a
-  verdict (timeout, provider failure, malformed output, empty response), the
-  Council returns an explicitly degraded `INSUFFICIENT_INFORMATION` — and the UI
-  renders a **distinct result panel** (never the normal verdict card, never
-  `BUILD`/`REFINE`/`VALIDATE`/`RECONSIDER`/`REJECT`). Completed analyses are
-  preserved, `[TRY AGAIN]` re-convenes the Council, `[NEW QUESTION]` resets. The
-  no-majority-vote rule is now pinned by a regression matrix in the tests.
+  verdict, the Council never pretends it did: V0.2.2.1 returned an explicitly
+  degraded `INSUFFICIENT_INFORMATION` result panel; V0.2.2.2 goes further and
+  synthesizes a clearly-labelled **PROVISIONAL** verdict from the surviving
+  analyses (with a "Provisional result" banner) so the Council's work stays
+  usable. The no-majority-vote rule is pinned by a regression matrix in the
+  tests.
 - **The chamber geometry.** In FULL and DEEP modes the four perspectives now sit
   around a central **Council node** (the gavel seal) with radiating connection
   lines — faint warm-grey while the agents analyze independently, gold and
@@ -154,9 +191,10 @@ argument can outweigh a weak majority. Verdicts: `BUILD`, `REFINE`,
   Reassessment stage re-evaluates which arguments hardened, which weakened,
   and which positions changed — the Judge sees all of it.
 - **The Judge never counts votes.** If the Judge fails, the Council returns
-  an explicitly degraded `INSUFFICIENT_INFORMATION` verdict instead of
-  deriving a verdict from stance counts. The verdict now also states **why
-  this verdict won**.
+  an explicitly degraded **PROVISIONAL** verdict synthesized from the
+  surviving analyses — never derived from stance counts, never a fabricated
+  normal verdict. The verdict states **why this verdict won** (or, when
+  degraded, is explicitly labelled provisional).
 - **Richer comparison.** Contradictions, missing information, risks, and
   unique insights are extracted alongside agreements and disagreements.
 - **Sessions.** Every run has a session id and is recorded client-side
@@ -234,21 +272,25 @@ components/council/
   CouncilApp.tsx              # phase state machine: idle → run → verdict/error/cancelled
   QuestionScreen.tsx          # question, mode picker, Convene button
   DeliberationPanel.tsx       # live stage visualization + Cancel
-  VerdictView.tsx             # verdict card + expandable analyses + disagreement view
+  VerdictView.tsx             # verdict card + how-it-formed view + expandable analyses
+  ExpandableAnalysis.tsx      # shared expandable member card (every surface)
   ChallengeButton.tsx         # [Challenge the Council] — later version
   icons.tsx                   # hand-drawn SVG icons — no emojis
 lib/council/
   agents.ts                   # agent registry + classifier (type/capabilities) + selection
   orchestrator.ts             # pipeline: classify → analyze → compare → DA → reassess → judge
+  synthesizer.ts              # deterministic provisional verdict when the Judge fails
   schemas.ts                  # Zod validation for every model output
   parse.ts                    # safe JSON extraction + graceful fallback
   providers/                  # model router: ollama | openai-compatible | per-stage
   usage.ts                    # per-session cost/usage tracking (future tiers)
 lib/client/
-  councilState.ts             # pure session state machine (testable, no React)
-  useCouncil.ts               # SSE consumer wired to the state machine
+  councilState.ts             # pure session state machine: IDLE→…→COMPLETE/DEGRADED/FAILED
+  useCouncil.ts               # SSE consumer + per-member retry + persistence
+  persistence.ts              # localStorage session history (TEST 6)
+  deliberation.ts             # stage/agent visual state derivation (pure)
 lib/council/types.ts          # domain types: classification, comparison, verdict, events
-tests/                        # unit tests (schemas, parsing, orchestrator, state machine)
+tests/                        # unit tests (schemas, parsing, orchestrator, synthesizer, state)
 ```
 
 ## Design notes
@@ -257,11 +299,12 @@ tests/                        # unit tests (schemas, parsing, orchestrator, stat
   role — never each other's output — until comparison. This is intentional:
   it reduces anchoring and groupthink.
 - **Resilience.** If one agent fails, the Council continues with the
-  survivors and the Judge is told to lower confidence. If the Judge fails, no
-  verdict is fabricated — the Council returns an explicitly degraded
-  `INSUFFICIENT_INFORMATION` verdict and preserves the completed analyses.
-  The Council never counts stances and never derives a verdict from majority
-  opinion.
+  survivors (you can retry that single member), and the Judge is told to lower
+  confidence. If the Judge fails, no normal verdict is fabricated — the
+  Council returns an explicitly degraded **PROVISIONAL** verdict synthesized
+  deterministically from the surviving analyses and preserves every completed
+  analysis. The Council never counts stances and never derives a verdict from
+  majority opinion.
 - **Untrusted model output.** Every structured response is validated with
   Zod; malformed output degrades gracefully (raw text is kept, never silently
   dropped). Safe parsing rescues fenced, truncated, or prose-wrapped JSON.

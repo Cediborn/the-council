@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { VERDICT_CATEGORIES, type CouncilVerdict } from "./types";
+import { ALL_VERDICTS, type VerdictCategory } from "./types";
 
 /**
  * All model output is treated as untrusted data. Every structured response
@@ -148,30 +148,106 @@ export const devilsAdvocateSchema = z.object({
   evidenceThatWouldResolve: stringList(6),
 });
 
-/** The Judge's strict verdict schema — mirrors the spec section 11 + Part 14. */
+/**
+ * The Judge's strict verdict schema — mirrors the V0.2.2.2 output contract.
+ *
+ * Accepts any category from the shared union (the orchestrator then enforces
+ * the question-type-specific set: a category outside the allowed set is
+ * treated as malformed and falls back to the deterministic synthesizer).
+ * Missing fields coerce gracefully so malformed output never crashes the UI.
+ */
 export const verdictSchema = z.object({
-  verdict: z.enum(VERDICT_CATEGORIES as [CouncilVerdict["verdict"], ...CouncilVerdict["verdict"][]]),
+  verdict: z.enum(ALL_VERDICTS as [VerdictCategory, ...VerdictCategory[]]),
   score: z.number().min(0).max(10),
   confidence: z.number().min(0).max(100),
+  // V0.2.2.2 (Part 1A): how complete/reliable the available information is.
+  informationSufficiency: z
+    .enum(["HIGH", "MEDIUM", "LOW"])
+    .catch("LOW")
+    .default("LOW"),
   summary: nonEmptyString,
-  strongestArgumentFor: nonEmptyString,
-  strongestArgumentAgainst: nonEmptyString,
-  keyAgreements: stringList(8),
-  keyDisagreements: stringList(8),
-  criticalAssumptions: stringList(8),
-  criticalRisks: stringList(8),
+  // V0.2.2.2 (Part 6): the deciding reasons.
+  keyReasons: stringList(8),
+  // Renamed from keyAgreements (V0.2.2.2 contract).
+  agreements: stringList(8),
+  // Renamed from keyDisagreements (V0.2.2.2 contract).
+  disagreements: stringList(8),
+  // V0.2.2.2 (Part 1): what is still unknown and would matter.
+  criticalUnknowns: stringList(8),
+  // Renamed from criticalAssumptions (V0.2.2.2 contract).
+  assumptions: stringList(8),
+  // Renamed from criticalRisks (V0.2.2.2 contract).
+  risks: stringList(8),
   recommendedAction: nonEmptyString,
-  whatWouldChangeTheVerdict: stringList(8),
+  // Renamed from whatWouldChangeTheVerdict (V0.2.2.2 contract).
+  whatWouldChangeVerdict: stringList(8),
   reasoning: nonEmptyString,
   // Small models sometimes omit this; fall back to the reasoning text so the
   // verdict stays complete and honest.
   whyThisVerdictWon: z.string().max(1200).default(""),
+  strongestArgumentFor: nonEmptyString,
+  strongestArgumentAgainst: nonEmptyString,
+});
+
+/** Agent keys for resume validation (must match types.AgentKey). */
+const AGENT_KEY_ENUM = [
+  "reasoner",
+  "skeptic",
+  "practicalist",
+  "perspective",
+  "devils_advocate",
+  "comparer",
+  "reassessor",
+  "judge",
+] as const;
+
+/**
+ * Analyses carried in a resume payload. agentAnalysisSchema covers the model
+ * output fields; agent/name (assigned by the orchestrator) and the failure
+ * markers must be preserved so a resumed session can rebuild the exact map.
+ *
+ * `summary` is RELAXED to allow empty: a failed analysis keeps `summary: ""`
+ * (the orchestrator's catch only sets failed/error/outcome), and the exact
+ * member the retry feature exists for must round-trip or the resume POST 400s.
+ */
+export const resumeAnalysisSchema = agentAnalysisSchema
+  .extend({
+    agent: z.enum(AGENT_KEY_ENUM),
+    name: z.string().min(1),
+    summary: z.string().max(8000),
+    failed: z.boolean().optional(),
+    error: z.string().optional(),
+    degraded: z.boolean().optional(),
+    outcome: z
+      .enum(["COMPLETED", "FAILED", "TIMED_OUT", "NOT_STARTED"])
+      .optional(),
+    retries: z.number().int().min(0).optional(),
+  })
+  .superRefine((v, ctx) => {
+    // A failed analysis must carry its failure markers; a successful one must
+    // have content. Anything else is a malformed resume payload.
+    if (!v.failed && v.summary.trim().length === 0) {
+      ctx.addIssue({ code: "custom", message: "successful analyses need a summary" });
+    }
+  });
+
+/**
+ * V0.2.2.2 (Part 5): resumable-session payload — the client re-submits the
+ * question/mode/sessionId with its completed analyses and the failed member
+ * to re-run. Optional on every request so normal runs are unaffected.
+ */
+export const resumeSchema = z.object({
+  agents: z.array(z.enum(AGENT_KEY_ENUM)).min(1).max(8),
+  analyses: z.array(resumeAnalysisSchema).max(8).default([]),
+  retryAgent: z.enum(AGENT_KEY_ENUM),
 });
 
 /** Incoming API request body. */
 export const councilRequestSchema = z.object({
   question: z.string().trim().min(1, "Ask the Council something.").max(6000, "Question too long (max 6000 characters)."),
   mode: z.enum(["QUICK", "FULL", "DEEP"]),
+  sessionId: z.string().min(1).max(120).optional(),
+  resume: resumeSchema.optional(),
 });
 
 export type ParsedVerdict = z.infer<typeof verdictSchema>;

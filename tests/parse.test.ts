@@ -5,6 +5,7 @@ import {
   agentAnalysisSchema,
   comparisonSchema,
   reassessmentSchema,
+  resumeAnalysisSchema,
 } from "@/lib/council/schemas";
 
 describe("parseJsonObject", () => {
@@ -99,25 +100,28 @@ describe("isPlainObject", () => {
 });
 
 describe("validate", () => {
-  it("accepts valid verdicts", () => {
+  it("accepts valid verdicts (V0.2.2.2 contract)", () => {
     const good = {
-      verdict: "BUILD",
-      score: 7.5,
-      confidence: 80,
-      summary: "Strong evidence.",
+      verdict: "BUILD_MVP",
+      score: 6.5,
+      confidence: 61,
+      informationSufficiency: "LOW",
+      summary: "Worth validating.",
+      keyReasons: ["Real problem", "Cheap to test"],
+      agreements: ["a"],
+      disagreements: ["b"],
+      criticalUnknowns: ["Will users pay?"],
+      assumptions: ["c"],
+      risks: ["d"],
+      recommendedAction: "Build a small MVP.",
+      whatWouldChangeVerdict: ["new data"],
+      reasoning: "Because.",
       strongestArgumentFor: "Fits the market.",
       strongestArgumentAgainst: "Competition.",
-      keyAgreements: ["a"],
-      keyDisagreements: ["b"],
-      criticalAssumptions: ["c"],
-      criticalRisks: ["d"],
-      recommendedAction: "Proceed.",
-      whatWouldChangeTheVerdict: ["new data"],
-      reasoning: "Because.",
     };
     const result = validate(verdictSchema, good);
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.data.verdict).toBe("BUILD");
+    if (result.ok) expect(result.data.verdict).toBe("BUILD_MVP");
   });
 
   it("rejects invalid verdict categories", () => {
@@ -148,6 +152,33 @@ describe("validate", () => {
     };
     const result = validate(verdictSchema, bad);
     expect(result.ok).toBe(false);
+  });
+
+  it("accepts a FAILED analysis with an empty summary in a resume payload (V0.2.2.2 Part 5)", () => {
+    const failed = {
+      agent: "skeptic",
+      name: "Skeptic",
+      summary: "",
+      stance: "NEUTRAL",
+      confidence: 50,
+      failed: true,
+      error: "timeout after 60s",
+      outcome: "TIMED_OUT",
+    };
+    const result = resumeAnalysisSchema.safeParse(failed);
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a successful analysis with an empty summary in a resume payload", () => {
+    const bad = {
+      agent: "reasoner",
+      name: "Reasoner",
+      summary: "",
+      stance: "SUPPORT",
+      confidence: 70,
+    };
+    const result = resumeAnalysisSchema.safeParse(bad);
+    expect(result.success).toBe(false);
   });
 
   it("rejects scores out of range", () => {
@@ -430,19 +461,19 @@ describe("validate", () => {
       summary: "Promising but needs work.",
       strongestArgumentFor: "Good fit.",
       strongestArgumentAgainst: "Cost.",
-      keyAgreements: "Most agents agree on the core idea",
-      keyDisagreements: "Feasibility is disputed",
-      criticalAssumptions: "Market exists",
-      criticalRisks: "Execution risk",
+      agreements: "Most agents agree on the core idea",
+      disagreements: "Feasibility is disputed",
+      assumptions: "Market exists",
+      risks: "Execution risk",
       recommendedAction: "Run a pilot.",
-      whatWouldChangeTheVerdict: "Evidence of demand",
+      whatWouldChangeVerdict: "Evidence of demand",
       reasoning: "The evidence is mixed.",
     };
     const result = validate(verdictSchema, messyVerdict);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.data.keyAgreements).toContain("Most agents agree on the core idea");
-      expect(result.data.criticalRisks).toContain("Execution risk");
+      expect(result.data.agreements).toContain("Most agents agree on the core idea");
+      expect(result.data.risks).toContain("Execution risk");
     }
   });
 });

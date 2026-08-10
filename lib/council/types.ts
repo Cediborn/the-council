@@ -48,6 +48,12 @@ export type Capability =
 /** How strongly the available evidence supports an analysis (Part 11). */
 export type EvidenceQuality = "STRONG" | "MODERATE" | "WEAK" | "UNKNOWN";
 
+/** V0.2.2.2: how complete/reliable the available information is (Part 1). */
+export type InformationSufficiency = "HIGH" | "MEDIUM" | "LOW";
+
+/** V0.2.2.2: per-member outcome attribution (Part 10 — never invent results). */
+export type AgentOutcome = "COMPLETED" | "FAILED" | "TIMED_OUT" | "NOT_STARTED";
+
 export interface QuestionClassification {
   type: QuestionType;
   label: string;
@@ -67,6 +73,9 @@ export type AgentKey =
 
 export type VerdictCategory =
   | "BUILD"
+  | "BUILD_MVP"
+  | "PIVOT"
+  | "DO_NOT_BUILD"
   | "REFINE"
   | "VALIDATE"
   | "RECONSIDER"
@@ -88,6 +97,8 @@ export interface AgentAnalysis {
   risks: string[];
   missingInformation: string[];
   confidence: number; // 0-100
+  /** V0.2.2.2: explicit outcome — COMPLETED / FAILED / TIMED_OUT / NOT_STARTED. */
+  outcome?: AgentOutcome;
   /** V0.2.1: how strong the evidence behind this analysis is (Part 11). */
   evidenceQuality?: EvidenceQuality;
   /** True when the model output could not be parsed and raw text was kept. */
@@ -162,25 +173,46 @@ export interface DevilAdvocateAnalysis {
   retries?: number;
 }
 
-/** The Judge's structured verdict (strict schema — see schemas.ts). */
+/**
+ * The Judge's structured verdict (strict schema — see schemas.ts).
+ *
+ * V0.2.2.2: fields were renamed/adapted onto the fixed output contract
+ * (agreements/disagreements/assumptions/risks/whatWouldChangeVerdict) and
+ * extended with informationSufficiency, keyReasons and criticalUnknowns so
+ * the Judge can give provisional verdicts instead of escaping into
+ * INSUFFICIENT_INFORMATION. `score` (0-10) is retained.
+ */
 export interface CouncilVerdict {
   verdict: VerdictCategory;
   score: number; // 0-10
   confidence: number; // 0-100
+  /** V0.2.2.2: information sufficiency (Part 1A). */
+  informationSufficiency: InformationSufficiency;
   summary: string;
-  strongestArgumentFor: string;
-  strongestArgumentAgainst: string;
-  keyAgreements: string[];
-  keyDisagreements: string[];
-  criticalAssumptions: string[];
-  criticalRisks: string[];
+  /** V0.2.2.2: the deciding reasons (Part 8 — main deciding factors). */
+  keyReasons: string[];
+  /** Renamed from keyAgreements (V0.2.2.2 contract). */
+  agreements: string[];
+  /** Renamed from keyDisagreements (V0.2.2.2 contract). */
+  disagreements: string[];
+  /** V0.2.2.2: what is still unknown and would matter (Part 1). */
+  criticalUnknowns: string[];
+  /** Renamed from criticalAssumptions (V0.2.2.2 contract). */
+  assumptions: string[];
+  /** Renamed from criticalRisks (V0.2.2.2 contract). */
+  risks: string[];
   recommendedAction: string;
-  whatWouldChangeTheVerdict: string[];
+  /** Renamed from whatWouldChangeTheVerdict (V0.2.2.2 contract). */
+  whatWouldChangeVerdict: string[];
   reasoning: string;
   /** V0.2: the explicit "why this verdict won" statement (Part 14). */
   whyThisVerdictWon: string;
+  strongestArgumentFor: string;
+  strongestArgumentAgainst: string;
   /** True when the model could not produce a valid verdict and we returned a safe fallback. */
   degraded?: boolean;
+  /** V0.2.2.2: true when the deterministic synthesizer produced this because the Judge failed. */
+  provisional?: boolean;
 }
 
 export interface CouncilUsage {
@@ -197,6 +229,16 @@ export interface CouncilUsage {
   success: boolean;
   questionLength: number;
   startedAt: string;
+  /** V0.2.2.2: per-stage wall-clock durations (ms) — performance audit (Part 9). */
+  stageDurations: {
+    analysisMs: number;
+    comparisonMs: number;
+    devilsAdvocateMs: number;
+    reassessmentMs: number;
+    judgeMs: number;
+  };
+  /** V0.2.2.2: per-analyst wall-clock durations (ms), keyed by agent key. */
+  agentDurations: Record<string, number>;
 }
 
 /** Raw request body for POST /api/council. */
@@ -274,7 +316,17 @@ export type CouncilEvent =
       devilsAdvocate?: DevilAdvocateAnalysis | null;
     };
 
-export const VERDICT_CATEGORIES: VerdictCategory[] = [
+/** Verdicts offered for product/business-flavoured questions (V0.2.2.2). */
+export const PRODUCT_VERDICTS: VerdictCategory[] = [
+  "BUILD",
+  "BUILD_MVP",
+  "PIVOT",
+  "DO_NOT_BUILD",
+  "INSUFFICIENT_INFORMATION",
+];
+
+/** Verdicts offered for general questions (explanations, maths, arguments, …). */
+export const GENERAL_VERDICTS: VerdictCategory[] = [
   "BUILD",
   "REFINE",
   "VALIDATE",
@@ -282,6 +334,42 @@ export const VERDICT_CATEGORIES: VerdictCategory[] = [
   "REJECT",
   "INSUFFICIENT_INFORMATION",
 ];
+
+/** Every category across both sets — used by the shared verdict schema. */
+export const ALL_VERDICTS: VerdictCategory[] = [
+  "BUILD",
+  "BUILD_MVP",
+  "PIVOT",
+  "DO_NOT_BUILD",
+  "REFINE",
+  "VALIDATE",
+  "RECONSIDER",
+  "REJECT",
+  "INSUFFICIENT_INFORMATION",
+];
+
+/** Question types judged with the product verdict set (V0.2.2.2 Part 13). */
+export const PRODUCT_TYPES: QuestionType[] = [
+  "business",
+  "decision",
+  "planning",
+  "comparison",
+  "troubleshooting",
+  "creative",
+];
+
+/**
+ * V0.2.2.2: which verdict categories a question may receive, by its type.
+ * Product-flavoured questions (idea/proposal evaluation) use the product set;
+ * everything else keeps the general set. INSUFFICIENT_INFORMATION is shared.
+ */
+export function verdictsForType(type: QuestionType): VerdictCategory[] {
+  return PRODUCT_TYPES.includes(type) ? PRODUCT_VERDICTS : GENERAL_VERDICTS;
+}
+
+export function isProductType(type: QuestionType): boolean {
+  return PRODUCT_TYPES.includes(type);
+}
 
 export const MODES: { value: CouncilMode; label: string; blurb: string }[] = [
   { value: "QUICK", label: "Quick", blurb: "3 agents · fastest · everyday questions" },

@@ -4,26 +4,37 @@ import { useState } from "react";
 import { AnimatePresence, motion, MotionConfig } from "framer-motion";
 import { useCouncil } from "@/lib/client/useCouncil";
 import { completedAnalyses } from "@/lib/client/councilState";
-import type { AgentAnalysis } from "@/lib/council/types";
+import type { AgentAnalysis, AgentKey } from "@/lib/council/types";
 import { QuestionScreen } from "./QuestionScreen";
 import { DeliberationPanel } from "./DeliberationPanel";
 import { VerdictView } from "./VerdictView";
 import { InsufficientPanel } from "./InsufficientPanel";
 import { ChallengeButton } from "./ChallengeButton";
-import { AlertIcon, RotateIcon } from "@/components/icons";
+import { ExpandableAnalysis } from "./ExpandableAnalysis";
+import { AlertIcon, GavelIcon, RotateIcon } from "@/components/icons";
+import type { StoredSession } from "@/lib/client/persistence";
 
 /**
- * COUNCIL V0.2.2 — app shell.
+ * COUNCIL V0.2.2.2 — app shell.
  *
- * Reliability guarantees (V0.2) are unchanged: an error ALWAYS renders the
- * error panel, even with zero SSE events, and the user can retry or start a
- * new question — a refresh is never required. V0.2.2 restyles every state in
- * the obsidian/gold identity and gives the cancelled state a proper landing
- * with preserved analyses + retry.
+ * Explicit phase machine (Part 5): every phase resolves to success, failure,
+ * or cancellation — a refresh is never required. V0.2.2.2 adds the DEGRADED
+ * terminal phase (provisional verdict rendered through VerdictView with its
+ * banner), per-member retry, and a persisted previous-deliberations list
+ * (TEST 6 — results survive a refresh).
  */
 export function CouncilApp() {
   const council = useCouncil();
   const [showChallenge, setShowChallenge] = useState(false);
+
+  const running =
+    council.phase === "analyzing" ||
+    council.phase === "partial_results" ||
+    council.phase === "council_complete" ||
+    council.phase === "judging";
+
+  const retryMember = (agent: AgentKey) => council.retryAgent(agent);
+  const preserved = completedAnalyses(council.events);
 
   return (
     <MotionConfig reducedMotion="user">
@@ -39,34 +50,38 @@ export function CouncilApp() {
               className="flex flex-1 flex-col justify-center"
             >
               <QuestionScreen onRun={council.run} />
+              <PreviousSessions
+                sessions={council.previousSessions}
+                onRestore={council.restoreSession}
+                onClear={council.clearHistory}
+              />
             </motion.div>
           )}
 
-          {(council.phase === "submitting" || council.phase === "running") &&
-            council.events.length === 0 && (
-              <motion.div
-                key="starting"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="flex flex-1 flex-col items-center justify-center gap-6"
+          {council.phase === "analyzing" && council.events.length === 0 && (
+            <motion.div
+              key="starting"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex flex-1 flex-col items-center justify-center gap-6"
+            >
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-brand/30 bg-brand/5 text-brand animate-glow">
+                <AlertIcon className="h-6 w-6 animate-breathe" />
+              </div>
+              <p className="font-display text-lg text-ink-soft animate-pulse-soft">
+                The Council is assembling…
+              </p>
+              <button
+                onClick={council.cancel}
+                className="inline-flex items-center gap-2 rounded-xl border border-line bg-surface px-5 py-2.5 text-sm font-semibold text-ink-soft transition-all hover:border-bad/40 hover:text-bad"
               >
-                <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-brand/30 bg-brand/5 text-brand animate-glow">
-                  <AlertIcon className="h-6 w-6 animate-breathe" />
-                </div>
-                <p className="font-display text-lg text-ink-soft animate-pulse-soft">
-                  The Council is assembling…
-                </p>
-                <button
-                  onClick={council.cancel}
-                  className="inline-flex items-center gap-2 rounded-xl border border-line bg-surface px-5 py-2.5 text-sm font-semibold text-ink-soft transition-all hover:border-bad/40 hover:text-bad"
-                >
-                  Cancel
-                </button>
-              </motion.div>
-            )}
+                Cancel
+              </button>
+            </motion.div>
+          )}
 
-          {council.phase === "running" && council.events.length > 0 && (
+          {running && council.events.length > 0 && (
             <motion.div
               key="running"
               initial={{ opacity: 0 }}
@@ -91,7 +106,8 @@ export function CouncilApp() {
               className="flex flex-1 flex-col justify-center"
             >
               <CancelledPanel
-                preserved={completedAnalyses(council.events)}
+                preserved={preserved}
+                onRetryAgent={retryMember}
                 onRetry={() => {
                   if (council.question && council.mode) council.run(council.question, council.mode);
                 }}
@@ -100,16 +116,17 @@ export function CouncilApp() {
             </motion.div>
           )}
 
-          {council.phase === "error" && (
+          {council.phase === "failed" && (
             <motion.div
-              key="error"
+              key="failed"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               className="flex flex-1 flex-col justify-center"
             >
               <ErrorPanel
                 message={council.error ?? "Unknown error"}
-                preserved={completedAnalyses(council.events)}
+                preserved={preserved}
+                onRetryAgent={retryMember}
                 onRetry={() => {
                   if (council.question && council.mode) council.run(council.question, council.mode);
                 }}
@@ -118,11 +135,10 @@ export function CouncilApp() {
             </motion.div>
           )}
 
-          {council.phase === "complete" && council.lastVerdict &&
-            // V0.2.2.1 (Part 16): a degraded INSUFFICIENT_INFORMATION verdict
-            // (Judge failure) renders the distinct failure panel — never the
-            // normal verdict card, and never BUILD/REFINE/VALIDATE/RECONSIDER/REJECT.
-            (council.lastVerdict.verdict.degraded ? (
+          {(council.phase === "degraded" || council.phase === "complete") &&
+            council.lastVerdict &&
+            (council.phase === "degraded" && preserved.length === 0 ? (
+              // True no-information degraded state — nothing to synthesize.
               <motion.div
                 key="insufficient"
                 initial={{ opacity: 0, y: 16 }}
@@ -131,7 +147,8 @@ export function CouncilApp() {
                 className="flex flex-1 flex-col justify-center"
               >
                 <InsufficientPanel
-                  preserved={completedAnalyses(council.events)}
+                  preserved={preserved}
+                  onRetryAgent={retryMember}
                   onRetry={() => {
                     if (council.question && council.mode) council.run(council.question, council.mode);
                   }}
@@ -150,6 +167,7 @@ export function CouncilApp() {
                   verdict={council.lastVerdict.verdict}
                   usage={council.lastVerdict.usage}
                   events={council.events}
+                  onRetryAgent={retryMember}
                 />
                 <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <button
@@ -171,18 +189,66 @@ export function CouncilApp() {
   );
 }
 
-/** V0.2.2 cancelled landing (Part 20) — never a hard drop back to the home screen. */
+/** V0.2.2.2 (TEST 6): persisted deliberations, restorable after a refresh. */
+function PreviousSessions({
+  sessions,
+  onRestore,
+  onClear,
+}: {
+  sessions: StoredSession[];
+  onRestore: (session: StoredSession) => void;
+  onClear: () => void;
+}) {
+  if (sessions.length === 0) return null;
+  return (
+    <div className="mx-auto mt-10 w-full max-w-2xl">
+      <div className="flex items-center justify-between">
+        <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-ink-soft">
+          Previous deliberations
+        </p>
+        <button
+          onClick={onClear}
+          className="text-xs text-ink-soft transition-colors hover:text-bad"
+        >
+          Clear history
+        </button>
+      </div>
+      <ul className="mt-2 flex flex-col gap-2">
+        {sessions.map((s) => (
+          <li key={s.sessionId}>
+            <button
+              onClick={() => onRestore(s)}
+              className="flex w-full items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3 text-left transition-all hover:border-brand/40"
+            >
+              <GavelIcon className="h-4 w-4 shrink-0 text-brand" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium text-ink">{s.question}</span>
+                <span className="block text-[11px] text-ink-soft">
+                  {s.mode} · {s.status} · {new Date(s.startedAt).toLocaleString()}
+                </span>
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** V0.2.2 cancelled landing — never a hard drop back to the home screen. */
 function CancelledPanel({
   preserved,
+  onRetryAgent,
   onRetry,
   onReset,
 }: {
   preserved: AgentAnalysis[];
+  onRetryAgent: (agent: AgentKey) => void;
   onRetry: () => void;
   onReset: () => void;
 }) {
   return (
-    <div className="mx-auto w-full max-w-xl rounded-2xl border border-line bg-card p-8 text-center shadow-card">
+    <div className="mx-auto w-full max-w-xl rounded-2xl border border-line bg-card p-8 shadow-card">
       <p className="font-mono text-[11px] uppercase tracking-[0.3em] text-ink-soft">
         Council session cancelled
       </p>
@@ -199,14 +265,7 @@ function CancelledPanel({
       {preserved.length > 0 && (
         <div className="mt-5 flex flex-col gap-2 text-left">
           {preserved.map((a) => (
-            <div key={a.agent} className="rounded-xl border border-brand/15 bg-surface px-4 py-2.5">
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-brand" aria-hidden="true" />
-                <p className="font-display text-sm font-semibold text-ink">{a.name}</p>
-                <span className="text-[10px] uppercase tracking-wider text-brand">completed</span>
-              </div>
-              {a.summary && <p className="mt-1 line-clamp-2 text-sm text-ink-soft">{a.summary}</p>}
-            </div>
+            <ExpandableAnalysis key={a.agent} analysis={a} onRetry={() => onRetryAgent(a.agent)} />
           ))}
         </div>
       )}
@@ -230,19 +289,17 @@ function CancelledPanel({
   );
 }
 
-/**
- * Error recovery panel (V0.2 Part 1/2, V0.2.2 restyle) — calm and useful,
- * never a giant red banner (Part 19). Explains the likely cause, preserves
- * completed analyses, and always offers TRY AGAIN + NEW QUESTION.
- */
+/** Error recovery panel — calm and useful, never a giant red banner. */
 function ErrorPanel({
   message,
   preserved,
+  onRetryAgent,
   onRetry,
   onReset,
 }: {
   message: string;
   preserved: AgentAnalysis[];
+  onRetryAgent: (agent: AgentKey) => void;
   onRetry: () => void;
   onReset: () => void;
 }) {
@@ -275,14 +332,7 @@ function ErrorPanel({
       {preserved.length > 0 && (
         <div className="mt-4 flex flex-col gap-2">
           {preserved.map((a) => (
-            <div key={a.agent} className="rounded-xl border border-brand/15 bg-surface px-4 py-3">
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-brand" aria-hidden="true" />
-                <p className="font-display text-sm font-semibold text-ink">{a.name}</p>
-                <span className="text-[10px] uppercase tracking-wider text-brand">completed</span>
-              </div>
-              {a.summary && <p className="mt-1 line-clamp-2 text-sm text-ink-soft">{a.summary}</p>}
-            </div>
+            <ExpandableAnalysis key={a.agent} analysis={a} onRetry={() => onRetryAgent(a.agent)} />
           ))}
         </div>
       )}

@@ -98,4 +98,23 @@ export function describeProvider(provider: ModelProvider): { provider: string; m
   return { provider: provider.id, model: provider.model };
 }
 
+/**
+ * V0.2.2.2: classify a provider error as a TIMEOUT vs a generic failure so the
+ * session can attribute per-member outcomes (Part 10). Provider calls carry an
+ * internal timeout that aborts the fetch — those aborts surface as timeout
+ * errors. The caller's own abort signal is checked separately (a user cancel
+ * is NOT a timeout).
+ */
+export function isTimeoutError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const m = err.message.toLowerCase();
+  return (
+    m.includes("timeout") ||
+    m.includes("timed out") ||
+    m.includes("deadline") ||
+    m.includes("abort") ||
+    m.includes("the operation was aborted")
+  );
+}
+
 export type { ModelProvider, ProviderChatInput, ProviderChatResult } from "./types";

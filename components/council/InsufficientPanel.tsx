@@ -1,23 +1,26 @@
 "use client";
 
 import { AlertIcon, RotateIcon } from "@/components/icons";
-import type { AgentAnalysis } from "@/lib/council/types";
+import { ExpandableAnalysis } from "./ExpandableAnalysis";
+import type { AgentAnalysis, AgentKey } from "@/lib/council/types";
 
 /**
- * COUNCIL V0.2.2.1 (Part 16) — the distinct Judge-failure result.
+ * COUNCIL V0.2.2.2 — the DEGRADED landing surface.
  *
- * Shown ONLY when the final verdict is the degraded `INSUFFICIENT_INFORMATION`
- * fallback (the Judge did not complete). It never displays BUILD/REFINE/
- * VALIDATE/RECONSIDER/REJECT: those require a valid Judge verdict. Completed
- * analyses are preserved; no verdict is fabricated; the future Challenge flow
- * (not this panel) is what re-opens deliberation.
+ * Shown when a session ends with NO usable verdict AND no completed analyses
+ * to synthesize from (the genuine no-information case). Completed analyses are
+ * always preserved and fully expandable here — the Council's work is never
+ * hidden, even when synthesis is impossible. When a provisional verdict DOES
+ * exist, the (richer) VerdictView renders instead, with its provisional banner.
  */
 export function InsufficientPanel({
   preserved,
+  onRetryAgent,
   onRetry,
   onReset,
 }: {
   preserved: AgentAnalysis[];
+  onRetryAgent?: (agent: AgentKey) => void;
   onRetry: () => void;
   onReset: () => void;
 }) {
@@ -31,19 +34,12 @@ export function InsufficientPanel({
           <AlertIcon className="h-6 w-6" />
         </div>
         <h2 className="mt-4 font-display text-2xl font-bold text-ink">
-          Insufficient Information
+          Council synthesis unavailable
         </h2>
         <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-ink-soft">
-          The Council completed its analysis, but the final Judge could not
-          safely produce a verdict. No verdict is fabricated from the surviving
-          perspectives.
-        </p>
-        <p className="mt-3 text-xs text-ink-soft">
-          {preserved.length > 0
-            ? `${preserved.length} completed analysis${preserved.length === 1 ? "" : "es"} ${
-                preserved.length === 1 ? "is" : "are"
-              } preserved below.`
-            : "No completed analyses could be preserved."}
+          The final Judge could not safely produce a verdict and there were no
+          completed analyses to synthesize from. Nothing is fabricated — the
+          individual work below (if any) remains available.
         </p>
       </div>
 
@@ -53,14 +49,11 @@ export function InsufficientPanel({
             Completed analyses
           </p>
           {preserved.map((a) => (
-            <div key={a.agent} className="rounded-xl border border-brand/15 bg-surface px-4 py-3">
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-brand" aria-hidden="true" />
-                <p className="font-display text-sm font-semibold text-ink">{a.name}</p>
-                <span className="text-[10px] uppercase tracking-wider text-brand">completed</span>
-              </div>
-              {a.summary && <p className="mt-1 line-clamp-2 text-sm text-ink-soft">{a.summary}</p>}
-            </div>
+            <ExpandableAnalysis
+              key={a.agent}
+              analysis={a}
+              onRetry={onRetryAgent ? () => onRetryAgent(a.agent) : undefined}
+            />
           ))}
         </div>
       )}

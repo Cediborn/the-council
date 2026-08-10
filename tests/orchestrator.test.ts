@@ -68,17 +68,20 @@ const verdictJson = JSON.stringify({
   verdict: "BUILD",
   score: 8,
   confidence: 85,
+  informationSufficiency: "HIGH",
   summary: "A solid proposal.",
-  strongestArgumentFor: "market fit",
-  strongestArgumentAgainst: "competition",
-  keyAgreements: ["a"],
-  keyDisagreements: ["b"],
-  criticalAssumptions: ["c"],
-  criticalRisks: ["d"],
+  keyReasons: ["market fit"],
+  agreements: ["a"],
+  disagreements: ["b"],
+  criticalUnknowns: ["c"],
+  assumptions: ["d"],
+  risks: ["e"],
   recommendedAction: "Proceed with a pilot.",
-  whatWouldChangeTheVerdict: ["new data"],
+  whatWouldChangeVerdict: ["new data"],
   reasoning: "Weighing evidence, the case is strong.",
   whyThisVerdictWon: "The market-fit argument survived scrutiny.",
+  strongestArgumentFor: "market fit",
+  strongestArgumentAgainst: "competition",
 });
 
 async function collect(events: AsyncGenerator<CouncilEvent>): Promise<CouncilEvent[]> {
@@ -252,7 +255,7 @@ describe("runCouncil — resilience", () => {
     }).rejects.toThrow(/Every analytical agent failed/);
   });
 
-  it("never counts votes when the judge returns prose — returns INSUFFICIENT_INFORMATION", async () => {
+  it("never counts votes when the judge returns prose — synthesizes a PROVISIONAL verdict", async () => {
     const provider = makeProvider((input) => {
       if (input.system.includes("JUDGE")) return "I think this is a fine idea overall, yes.";
       if (input.system.includes("COMPARER")) return comparisonJson;
@@ -265,15 +268,17 @@ describe("runCouncil — resilience", () => {
     const verdict = events.find((e) => e.type === "verdict");
     expect(verdict?.type).toBe("verdict");
     if (verdict?.type === "verdict") {
+      // V0.2.2.2: a broken Judge is NOT replaced by stance counting. The result
+      // is explicitly degraded + provisional and never a full BUILD even though
+      // every analyst supported the idea.
       expect(verdict.verdict.degraded).toBe(true);
-      // Part 11: the Council does not vote. A broken Judge cannot be replaced
-      // by stance counting — it yields INSUFFICIENT_INFORMATION, honestly.
-      expect(verdict.verdict.verdict).toBe("INSUFFICIENT_INFORMATION");
-      expect(verdict.verdict.reasoning).toMatch(/degraded/i);
+      expect(verdict.verdict.provisional).toBe(true);
+      expect(verdict.verdict.verdict).not.toBe("BUILD");
+      expect(verdict.verdict.reasoning).toMatch(/degraded|provisional/i);
     }
   });
 
-  it("returns an explicitly degraded INSUFFICIENT_INFORMATION verdict when the judge throws", async () => {
+  it("returns a PROVISIONAL synthesized verdict when the judge throws", async () => {
     const provider = makeProvider((input) => {
       if (input.system.includes("JUDGE")) throw new Error("judge crash");
       if (input.system.includes("COMPARER")) return comparisonJson;
@@ -286,7 +291,8 @@ describe("runCouncil — resilience", () => {
     expect(verdict?.type).toBe("verdict");
     if (verdict?.type === "verdict") {
       expect(verdict.verdict.degraded).toBe(true);
-      expect(verdict.verdict.verdict).toBe("INSUFFICIENT_INFORMATION");
+      expect(verdict.verdict.provisional).toBe(true);
+      expect(verdict.verdict.summary).toMatch(/provisional/i);
     }
   });
 
@@ -348,7 +354,7 @@ describe("runCouncil — resilience", () => {
   // ── V0.2.2.1 (Part 2/3): the Judge-failure matrix — every failure mode
   // yields INSUFFICIENT_INFORMATION, never a stance-counted verdict. ──────
 
-  it("returns degraded INSUFFICIENT_INFORMATION when the judge emits malformed JSON — never counts stances", async () => {
+  it("synthesizes a PROVISIONAL verdict from malformed judge JSON — never a stance-counted BUILD", async () => {
     const provider = makeProvider((input) => {
       if (input.system.includes("JUDGE")) return '{ verdict: "BUILD", score: "eight" , ';
       if (input.system.includes("COMPARER")) return comparisonJson;
@@ -362,16 +368,16 @@ describe("runCouncil — resilience", () => {
     expect(verdict?.type).toBe("verdict");
     if (verdict?.type === "verdict") {
       expect(verdict.verdict.degraded).toBe(true);
-      expect(verdict.verdict.verdict).toBe("INSUFFICIENT_INFORMATION");
-      expect(verdict.verdict.score).toBe(0);
-      expect(verdict.verdict.reasoning).toMatch(/degraded/i);
-      // The surviving analyses are preserved on the verdict (they are the
-      // input to the fallback), and no BUILD is fabricated from the votes.
-      expect(verdict.verdict.summary).not.toMatch(/BUILD/i);
+      expect(verdict.verdict.provisional).toBe(true);
+      expect(verdict.verdict.reasoning).toMatch(/degraded|provisional/i);
+      // Even though every analyst SUPPORTed, the synthesizer reads reasoning
+      // content (one risk per analysis) — it must NOT hand out a full BUILD.
+      expect(verdict.verdict.verdict).not.toBe("BUILD");
+      expect(verdict.verdict.verdict).not.toBe("INSUFFICIENT_INFORMATION");
     }
   });
 
-  it("returns degraded INSUFFICIENT_INFORMATION when the judge times out", async () => {
+  it("synthesizes a PROVISIONAL verdict when the judge times out", async () => {
     const provider = makeProvider((input) => {
       if (input.system.includes("JUDGE")) throw new Error("timeout after 60s");
       if (input.system.includes("COMPARER")) return comparisonJson;
@@ -384,12 +390,12 @@ describe("runCouncil — resilience", () => {
     expect(verdict?.type).toBe("verdict");
     if (verdict?.type === "verdict") {
       expect(verdict.verdict.degraded).toBe(true);
-      expect(verdict.verdict.verdict).toBe("INSUFFICIENT_INFORMATION");
+      expect(verdict.verdict.provisional).toBe(true);
       expect(verdict.usage.failedAgentCalls).toBeGreaterThanOrEqual(1);
     }
   });
 
-  it("returns degraded INSUFFICIENT_INFORMATION when the judge returns an empty response", async () => {
+  it("synthesizes a PROVISIONAL verdict when the judge returns an empty response", async () => {
     const provider = makeProvider((input) => {
       if (input.system.includes("JUDGE")) return "";
       if (input.system.includes("COMPARER")) return comparisonJson;
@@ -402,8 +408,8 @@ describe("runCouncil — resilience", () => {
     expect(verdict?.type).toBe("verdict");
     if (verdict?.type === "verdict") {
       expect(verdict.verdict.degraded).toBe(true);
-      expect(verdict.verdict.verdict).toBe("INSUFFICIENT_INFORMATION");
-      expect(verdict.verdict.recommendedAction).toMatch(/Retry|check/i);
+      expect(verdict.verdict.provisional).toBe(true);
+      expect(verdict.verdict.recommendedAction.length).toBeGreaterThan(0);
     }
   });
 
@@ -427,5 +433,143 @@ describe("runCouncil — resilience", () => {
     const err = thrown as { name?: string; analyses?: unknown[]; message?: string };
     expect(err.name).toBe("CouncilRunError");
     expect(err.analyses).toBeDefined();
+  });
+
+  // ── V0.2.2.2 (Part 5): resumable sessions — retry ONE failed member. ─────
+
+  it("resumes a session by re-running only the failed member", async () => {
+    let calls = 0;
+    const provider: ModelProvider = {
+      id: "mock",
+      model: "mock-model",
+      async chat(input: ProviderChatInput): Promise<ProviderChatResult> {
+        calls += 1;
+        if (input.system.includes("REASONER")) throw new Error("boom");
+        if (input.system.includes("JUDGE")) return { content: verdictJson, usage: { inputTokens: 1, outputTokens: 1 } };
+        if (input.system.includes("COMPARER")) return { content: comparisonJson, usage: { inputTokens: 1, outputTokens: 1 } };
+        return { content: agentJson(), usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+
+    // First run: the Reasoner fails; the rest complete and the (healthy) Judge
+    // still produces a verdict — the failed member is preserved on the run.
+    const first = await collect(runCouncil({ mode: "FULL", question: "Q?", provider }));
+    const firstReasoner = first.find((e) => e.type === "agent:done" && e.analysis.agent === "reasoner");
+    expect(firstReasoner?.type).toBe("agent:done");
+    if (firstReasoner?.type === "agent:done") expect(firstReasoner.analysis.failed).toBe(true);
+
+    // Now make the Reasoner succeed and resume the SAME session.
+    const agentEvents = first.filter((e): e is Extract<CouncilEvent, { type: "agent:done" }> => e.type === "agent:done");
+    const analyses = agentEvents.map((e) => e.analysis);
+    const agents = first.find((e): e is Extract<CouncilEvent, { type: "convened" }> => e.type === "convened")?.agents ?? [];
+
+    const reasonerOk: ModelProvider = {
+      id: "mock",
+      model: "mock-model",
+      async chat(input: ProviderChatInput): Promise<ProviderChatResult> {
+        if (input.system.includes("REASONER")) return { content: agentJson(), usage: { inputTokens: 1, outputTokens: 1 } };
+        if (input.system.includes("JUDGE")) return { content: verdictJson, usage: { inputTokens: 1, outputTokens: 1 } };
+        if (input.system.includes("COMPARER")) return { content: comparisonJson, usage: { inputTokens: 1, outputTokens: 1 } };
+        return { content: agentJson(), usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+
+    const resumed = await collect(
+      runCouncil({
+        mode: "FULL",
+        question: "Q?",
+        provider: reasonerOk,
+        sessionId: "sess-1",
+        resume: { agents, analyses, retryAgent: "reasoner" },
+      }),
+    );
+
+    // Only the retried member was re-called (1 analyst + comparer + judge).
+    const reasonerDone = resumed.filter((e) => e.type === "agent:done" && e.analysis.agent === "reasoner");
+    expect(reasonerDone).toHaveLength(1);
+    const reasonerAnalysis = reasonerDone[0].type === "agent:done" ? reasonerDone[0].analysis : null;
+    expect(reasonerAnalysis?.failed).not.toBe(true);
+    // The other members are NOT re-emitted as done events (they were carried over).
+    const totalDone = resumed.filter((e) => e.type === "agent:done").length;
+    expect(totalDone).toBe(1);
+    // The resumed run still completes with a normal (non-degraded) verdict.
+    const resumedVerdict = resumed.find((e) => e.type === "verdict");
+    expect(resumedVerdict?.type).toBe("verdict");
+    if (resumedVerdict?.type === "verdict") {
+      expect(resumedVerdict.verdict.degraded).toBe(false);
+      expect(resumedVerdict.usage.sessionId).toBe("sess-1");
+    }
+  });
+
+  it("records per-stage durations in usage (Part 9)", async () => {
+    const provider = makeProvider((input) => {
+      if (input.system.includes("JUDGE")) return verdictJson;
+      if (input.system.includes("COMPARER")) return comparisonJson;
+      return agentJson();
+    });
+    const events = await collect(runCouncil({ mode: "FULL", question: "Q?", provider }));
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
+    if (verdict?.type === "verdict") {
+      expect(verdict.usage.stageDurations).toBeDefined();
+      expect(verdict.usage.stageDurations.analysisMs).toBeGreaterThanOrEqual(0);
+      expect(verdict.usage.stageDurations.judgeMs).toBeGreaterThanOrEqual(0);
+      expect(verdict.usage.agentDurations).toBeDefined();
+    }
+  });
+
+  it("treats a verdict outside the question type's allowed set as malformed → PROVISIONAL (V0.2.2.2 Part 6)", async () => {
+    // "Why is the sky blue?" is an explanation → general verdict set. PIVOT is
+    // product-only, so it must NOT be accepted as a normal verdict.
+    const outOfSet = JSON.stringify({
+      verdict: "PIVOT",
+      score: 6,
+      confidence: 70,
+      informationSufficiency: "MEDIUM",
+      summary: "A pivot.",
+      keyReasons: ["x"],
+      agreements: [],
+      disagreements: [],
+      criticalUnknowns: [],
+      assumptions: [],
+      risks: [],
+      recommendedAction: "Pivot.",
+      whatWouldChangeVerdict: [],
+      reasoning: "x",
+      whyThisVerdictWon: "x",
+      strongestArgumentFor: "x",
+      strongestArgumentAgainst: "x",
+    });
+    const provider = makeProvider((input) => {
+      if (input.system.includes("JUDGE")) return outOfSet;
+      if (input.system.includes("COMPARER")) return comparisonJson;
+      return agentJson();
+    });
+    const events = await collect(
+      runCouncil({ mode: "FULL", question: "Why is the sky blue?", provider }),
+    );
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
+    if (verdict?.type === "verdict") {
+      expect(verdict.verdict.degraded).toBe(true);
+      expect(verdict.verdict.provisional).toBe(true);
+      expect(verdict.verdict.verdict).not.toBe("PIVOT");
+    }
+  });
+
+  it("attributes a timed-out analyst as TIMED_OUT, not just FAILED (Part 10)", async () => {
+    const provider = makeProvider((input) => {
+      if (input.system.includes("REASONER")) throw new Error("timeout after 60s");
+      if (input.system.includes("JUDGE")) return verdictJson;
+      if (input.system.includes("COMPARER")) return comparisonJson;
+      return agentJson();
+    });
+    const events = await collect(runCouncil({ mode: "FULL", question: "Q?", provider }));
+    const reasoner = events.find((e) => e.type === "agent:done" && e.analysis.agent === "reasoner");
+    expect(reasoner?.type).toBe("agent:done");
+    if (reasoner?.type === "agent:done") {
+      expect(reasoner.analysis.failed).toBe(true);
+      expect(reasoner.analysis.outcome).toBe("TIMED_OUT");
+    }
   });
 });
