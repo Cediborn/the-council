@@ -12,21 +12,19 @@ import { labelForStance } from "@/lib/council/agents";
 import {
   AlertIcon,
   BoltIcon,
+  CompassIcon,
   EyeIcon,
   HourglassIcon,
   PedestalIcon,
   RotateIcon,
+  ScalesIcon,
   ShieldIcon,
-  SparkIcon,
   WrenchIcon,
-  CompassIcon,
+  XIcon,
 } from "@/components/icons";
 import type { ComponentType, SVGProps } from "react";
 
-const VERDICT_META: Record<
-  VerdictCategory,
-  { label: string; tone: string; blurb: string }
-> = {
+const VERDICT_META: Record<VerdictCategory, { label: string; tone: string; blurb: string }> = {
   BUILD: {
     label: "Build",
     tone: "mint",
@@ -77,6 +75,44 @@ const SECTION_DOT: Record<string, string> = {
   ink: "bg-ink-soft",
 };
 
+/**
+ * V0.2.2: each verdict category carries a distinct symbol — the verdict is
+ * distinguishable through icon + label + typography, never color alone.
+ */
+const VERDICT_ICON: Record<VerdictCategory, ComponentType<SVGProps<SVGSVGElement>>> = {
+  BUILD: ShieldIcon,
+  REFINE: WrenchIcon,
+  VALIDATE: ScalesIcon,
+  RECONSIDER: RotateIcon,
+  REJECT: XIcon,
+  INSUFFICIENT_INFORMATION: AlertIcon,
+};
+
+/** Staged reveal — the verdict feels earned, never instant (Part 16). */
+function Reveal({
+  delay = 0,
+  className,
+  style,
+  children,
+}: {
+  delay?: number;
+  className?: string;
+  style?: CSSProperties;
+  children: React.ReactNode;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 14 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.45, delay, ease: [0.22, 1, 0.36, 1] }}
+      className={className}
+      style={style}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
 function ScoreBar({ score }: { score: number }) {
   return (
     <div
@@ -99,12 +135,18 @@ function ScoreBar({ score }: { score: number }) {
 
 function VerdictBadge({ verdict, degraded }: { verdict: VerdictCategory; degraded?: boolean }) {
   const meta = VERDICT_META[verdict];
+  const Icon = VERDICT_ICON[verdict];
   return (
-    <div className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 ${TONE_CLASS[meta.tone]}`}>
-      <SparkIcon className="h-4 w-4" />
+    <motion.div
+      initial={{ scale: 0.88, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      transition={{ type: "spring", stiffness: 260, damping: 20, delay: 0.15 }}
+      className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 ${TONE_CLASS[meta.tone]}`}
+    >
+      <Icon className="h-4 w-4" />
       <span className="font-display text-sm font-bold uppercase tracking-wider">{meta.label}</span>
       {degraded && <span className="text-[10px] uppercase tracking-wider opacity-70">degraded</span>}
-    </div>
+    </motion.div>
   );
 }
 
@@ -536,12 +578,13 @@ export function VerdictView({
 
   return (
     <section className="animate-fade-up">
-      <div className="text-center">
-        <p className="font-mono text-[11px] uppercase tracking-[0.3em] text-brand">Verdict ready</p>
+      <Reveal delay={0} className="text-center">
+        <p className="font-mono text-[11px] uppercase tracking-[0.3em] text-brand">Deliberation complete</p>
         <h2 className="mt-2 font-display text-3xl font-bold tracking-tight text-ink">COUNCIL VERDICT</h2>
-      </div>
+      </Reveal>
 
-      <div
+      <Reveal
+        delay={0.08}
         className={`verdict-tone mt-6 rounded-2xl border p-6 shadow-card sm:p-8`}
         style={{ "--tone": `var(--color-${meta.tone})` } as CSSProperties}
       >
@@ -567,7 +610,7 @@ export function VerdictView({
               <motion.div
                 initial={{ width: 0 }}
                 animate={{ width: `${verdict.confidence}%` }}
-                transition={{ duration: 0.8, ease: "easeOut", delay: 0.1 }}
+                transition={{ duration: 0.8, ease: "easeOut", delay: 0.25 }}
                 className="h-full rounded-full bg-gradient-to-r from-brand-2 to-brand"
               />
             </div>
@@ -590,40 +633,50 @@ export function VerdictView({
             <p className="mt-1.5 text-sm leading-relaxed text-ink">{verdict.strongestArgumentAgainst}</p>
           </div>
         </div>
-      </div>
+      </Reveal>
 
-      <AgreementSummary events={events} />
+      <Reveal delay={0.2} className="mt-4">
+        <AgreementSummary events={events} />
+      </Reveal>
 
-      <div className="mt-6 grid gap-3 sm:grid-cols-2">
+      <Reveal delay={0.26} className="mt-6 grid gap-3 sm:grid-cols-2">
         <VerdictSection title="Key agreements" items={verdict.keyAgreements} dotClass="bg-mint" />
         <VerdictSection title="Key disagreements" items={verdict.keyDisagreements} dotClass="bg-bad" />
         <VerdictSection title="Critical assumptions" items={verdict.criticalAssumptions} dotClass={SECTION_DOT.achievement} />
         <VerdictSection title="Critical risks" items={verdict.criticalRisks} dotClass={SECTION_DOT.warn} />
-      </div>
+      </Reveal>
 
-      <ComparisonExtras events={events} />
+      <Reveal delay={0.32}>
+        <ComparisonExtras events={events} />
+      </Reveal>
 
-      {usage.mode === "DEEP" && <ReassessmentCard events={events} />}
+      {usage.mode === "DEEP" && (
+        <Reveal delay={0.36} className="mt-4">
+          <ReassessmentCard events={events} />
+        </Reveal>
+      )}
 
-      <div className="mt-3 rounded-xl border border-line bg-surface p-4">
+      <Reveal delay={0.4} className="mt-3 rounded-xl border border-line bg-surface p-4">
         <h3 className="font-display text-xs font-bold uppercase tracking-widest text-ink-soft">Recommended action</h3>
         <p className="mt-1.5 text-sm leading-relaxed text-ink">{verdict.recommendedAction}</p>
-      </div>
+      </Reveal>
 
-      <VerdictSection title="What would change our mind" items={verdict.whatWouldChangeTheVerdict} dotClass={dot} />
+      <Reveal delay={0.44}>
+        <VerdictSection title="What would change our mind" items={verdict.whatWouldChangeTheVerdict} dotClass={dot} />
+      </Reveal>
 
-      <div className="mt-3 rounded-xl border border-line bg-surface p-4">
+      <Reveal delay={0.48} className="mt-3 rounded-xl border border-line bg-surface p-4">
         <h3 className="font-display text-xs font-bold uppercase tracking-widest text-ink-soft">Why this verdict won</h3>
         <p className="mt-1.5 text-sm leading-relaxed text-ink">{verdict.whyThisVerdictWon}</p>
-      </div>
+      </Reveal>
 
-      <div className="mt-3 rounded-xl border border-line bg-surface p-4">
+      <Reveal delay={0.52} className="mt-3 rounded-xl border border-line bg-surface p-4">
         <h3 className="font-display text-xs font-bold uppercase tracking-widest text-ink-soft">Reasoning</h3>
         <p className="mt-1.5 text-sm leading-relaxed text-ink">{verdict.reasoning}</p>
-      </div>
+      </Reveal>
 
       {/* ── Individual perspectives ─────────────────────────────── */}
-      <div className="mt-8">
+      <Reveal delay={0.56} className="mt-8">
         <div className="flex items-center justify-between">
           <h3 className="font-display text-lg font-bold text-ink">The perspectives</h3>
           <span className="text-xs text-ink-soft">Expand each analysis</span>
@@ -634,10 +687,10 @@ export function VerdictView({
           ))}
           {daEvent && <DevilsAdvocateCard analysis={daEvent.analysis} />}
         </div>
-      </div>
+      </Reveal>
 
       {/* ── Session meta ────────────────────────────────────────── */}
-      <div className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[11px] text-ink-soft">
+      <Reveal delay={0.6} className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[11px] text-ink-soft">
         <span>Mode: <span className="font-mono uppercase">{usage.mode}</span></span>
         <span aria-hidden="true">·</span>
         <span>Model: <span className="font-mono">{usage.provider}/{usage.model}</span></span>
@@ -645,7 +698,7 @@ export function VerdictView({
         <span>Agents: <span className="font-mono">{usage.agentCalls}</span></span>
         <span aria-hidden="true">·</span>
         <span>{(usage.durationMs / 1000).toFixed(1)}s</span>
-      </div>
+      </Reveal>
     </section>
   );
 }

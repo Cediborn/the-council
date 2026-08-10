@@ -1,4 +1,4 @@
-# COUNCIL — V0.2.1
+# COUNCIL — V0.2.2
 
 A general-purpose, multi-agent **deliberation engine**. Ask it anything —
 everyday decisions, school questions, business ideas, code questions, life
@@ -81,6 +81,37 @@ argument can outweigh a weak majority. Verdicts: `BUILD`, `REFINE`,
 - **Anti-yes-man & anti-contrarian prompt contracts** are pinned by
   deterministic tests, and the general-question battery (math, code,
   purchases, university, relationships, arguments…) is covered by tests too.
+
+## V0.2.2 changes (deliberation experience & visual identity)
+
+- **Obsidian / warm-gold identity.** The purple-heavy direction is gone.
+  The Council now lives on layered near-blacks (`#080808` → `#141413`) with
+  warm gold (`#d4af37`) used sparingly — active states, progress, selected
+  modes, verdict highlights — over off-white text and muted warm greys.
+- **The deliberation is visible, never faked.** The redesigned
+  `DeliberationPanel` is a command chamber: a pipeline strip (Analyze →
+  Compare → Challenge → Reassess → Judge) tracks the real SSE events, and
+  every agent card has a true WAITING / ACTIVE / COMPLETE / FAILED state.
+  Active agents breathe with a gold ring and signal dots; completion is a
+  gold check; failure is a muted red. Stages only appear once their backend
+  event has arrived.
+- **Stage moments.** Comparison shows real agreement/disagreement/contradiction
+  counts and labels a FUNDAMENTAL vs SUPERFICIAL disagreement when the data
+  says so. Deep mode gets a distinct Devil's Advocate moment and a
+  Reassessment badge driven by the actual `UNCHANGED` / `STRENGTHENED` /
+  `WEAKENED` / `REVERSED` shift. The Judge cycles its real sub-process
+  (weighing evidence → reviewing dissent → calibrating confidence).
+- **Earned verdict.** The verdict card reveals in stages — badge, score,
+  confidence, then sections — and each verdict category carries its own icon
+  (shield / wrench / scales / rotate / cross / alert), so the verdict is
+  never communicated by color alone.
+- **Calm failure & cancellation.** Errors are now quiet and useful
+  ("Council could not finish" with a reason), and cancelling shows a
+  dedicated landing — "Deliberation stopped", preserved analyses, Resume +
+  New question — instead of dumping you back to the home screen.
+- **Reduced motion & responsiveness.** All animations respect
+  `prefers-reduced-motion` via `MotionConfig reducedMotion="user"` plus CSS;
+  agent cards stack on mobile instead of shrinking.
 
 ## V0.2 changes
 
@@ -204,8 +235,10 @@ tests/                        # unit tests (schemas, parsing, orchestrator, stat
   it reduces anchoring and groupthink.
 - **Resilience.** If one agent fails, the Council continues with the
   survivors and the Judge is told to lower confidence. If the Judge fails, no
-  verdict is fabricated — completed analyses are preserved and a clearly
-  marked degraded verdict is derived from surviving stances.
+  verdict is fabricated — the Council returns an explicitly degraded
+  `INSUFFICIENT_INFORMATION` verdict and preserves the completed analyses.
+  The Council never counts stances and never derives a verdict from majority
+  opinion.
 - **Untrusted model output.** Every structured response is validated with
   Zod; malformed output degrades gracefully (raw text is kept, never silently
   dropped). Safe parsing rescues fenced, truncated, or prose-wrapped JSON.

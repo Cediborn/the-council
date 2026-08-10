@@ -195,3 +195,18 @@ export function BubbleIcon(props: IconProps) {
     </svg>
   );
 }
+
+/** Converging nodes — the comparison stage gathers the independent analyses. */
+export function NodesIcon(props: IconProps) {
+  return (
+    <svg {...base(props)}>
+      <circle cx="4.5" cy="5" r="2" />
+      <circle cx="4.5" cy="19" r="2" />
+      <circle cx="19.5" cy="12" r="2" />
+      <circle cx="12" cy="12" r="1.4" />
+      <path d="M6.2 6.2 10.8 11" />
+      <path d="M6.2 17.8 10.8 13" />
+      <path d="M17.5 12H13.6" />
+    </svg>
+  );
+}

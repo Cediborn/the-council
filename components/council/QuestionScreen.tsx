@@ -35,10 +35,11 @@ export function QuestionScreen({ onRun }: { onRun: (question: string, mode: Coun
         transition={{ duration: 0.4 }}
         className="flex flex-col items-center text-center"
       >
-        <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border border-brand/30 bg-brand/10 text-brand animate-glow">
+        <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-2xl border border-brand/30 bg-brand/5 text-brand shadow-gold animate-glow">
           <GavelIcon className="h-8 w-8" />
         </div>
-        <h1 className="font-display text-4xl font-bold tracking-tight sm:text-5xl">COUNCIL</h1>
+        <p className="font-mono text-[11px] uppercase tracking-[0.35em] text-brand">Ask the Council</p>
+        <h1 className="mt-2 font-display text-4xl font-bold tracking-tight sm:text-5xl">COUNCIL</h1>
         <p className="mt-3 max-w-md text-balance text-ink-soft">
           Ask anything. When you need more than one perspective, convene the Council.
         </p>
@@ -53,7 +54,7 @@ export function QuestionScreen({ onRun }: { onRun: (question: string, mode: Coun
         <label htmlFor="council-question" className="sr-only">
           Your question for the Council
         </label>
-        <div className="group relative rounded-2xl border border-line bg-surface shadow-card transition-all focus-within:border-brand/60 focus-within:shadow-lift">
+        <div className="group relative rounded-2xl border border-line bg-surface shadow-card transition-all focus-within:border-brand/50 focus-within:shadow-lift">
           <textarea
             ref={inputRef}
             id="council-question"
@@ -106,7 +107,7 @@ export function QuestionScreen({ onRun }: { onRun: (question: string, mode: Coun
                 onClick={() => setMode(m.value)}
                 className={`flex-1 min-w-[9rem] rounded-xl border px-4 py-3 text-left transition-all ${
                   active
-                    ? "border-brand/60 bg-brand/10 shadow-card"
+                    ? "border-brand/60 bg-brand/10 shadow-gold"
                     : "border-line bg-surface hover:border-brand/30 hover:bg-card"
                 }`}
               >
@@ -132,7 +133,7 @@ export function QuestionScreen({ onRun }: { onRun: (question: string, mode: Coun
         <button
           onClick={submit}
           disabled={!trimmed && touched}
-          className="group inline-flex items-center gap-3 rounded-2xl bg-brand px-8 py-4 text-base font-bold text-white shadow-lift transition-all hover:bg-brand-2 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
+          className="group inline-flex items-center gap-3 rounded-2xl bg-brand px-8 py-4 text-base font-bold text-gold-contrast shadow-gold transition-all hover:bg-brand-2 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-50"
         >
           <GavelIcon className="h-5 w-5 transition-transform group-hover:-rotate-6" />
           Convene Council

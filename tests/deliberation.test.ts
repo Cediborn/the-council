@@ -1,0 +1,191 @@
+import { describe, expect, it } from "vitest";
+import {
+  agentVisual,
+  deriveDeliberationStage,
+  hasAnalysis,
+  stagesForMode,
+} from "@/lib/client/deliberation";
+import type { AgentAnalysis, AgentKey, CouncilEvent, CouncilMode } from "@/lib/council/types";
+
+const FOUR: AgentKey[] = ["reasoner", "skeptic", "practicalist", "perspective"];
+const THREE: AgentKey[] = ["reasoner", "skeptic", "practicalist"];
+
+const analysis: AgentAnalysis = {
+  agent: "reasoner",
+  name: "Reasoner",
+  summary: "A considered analysis.",
+  stance: "SUPPORT",
+  keyPoints: ["point"],
+  assumptions: [],
+  risks: [],
+  missingInformation: [],
+  confidence: 70,
+};
+
+function convened(agents: AgentKey[], mode: CouncilMode): CouncilEvent {
+  return {
+    type: "convened",
+    sessionId: "s-1",
+    mode,
+    agents,
+    classification: { type: "decision", label: "Decision", capabilities: ["logical_reasoning"] },
+    stage: "convened",
+  };
+}
+
+function done(agent: AgentKey): CouncilEvent {
+  return { type: "agent:done", analysis: { ...analysis, agent, name: agent }, stage: "analyzing" };
+}
+
+describe("deriveDeliberationStage — QUICK", () => {
+  it("analyzing until all analysts are done", () => {
+    const events: CouncilEvent[] = [
+      convened(THREE, "QUICK"),
+      { type: "agent:start", agent: "reasoner", name: "Reasoner", stage: "analyzing" },
+    ];
+    expect(deriveDeliberationStage(events, "QUICK")).toBe("analyzing");
+  });
+
+  it("jumps straight to judging when all analysts complete (no comparison stage)", () => {
+    const events: CouncilEvent[] = [
+      convened(THREE, "QUICK"),
+      ...THREE.map(done),
+    ];
+    expect(deriveDeliberationStage(events, "QUICK")).toBe("judging");
+  });
+
+  it("stays judging until the verdict event", () => {
+    const events: CouncilEvent[] = [
+      convened(THREE, "QUICK"),
+      ...THREE.map(done),
+      { type: "stage", stage: "judging" },
+    ];
+    expect(deriveDeliberationStage(events, "QUICK")).toBe("judging");
+  });
+});
+
+describe("deriveDeliberationStage — FULL", () => {
+  it("analyzing → comparing once analysts are done", () => {
+    const events: CouncilEvent[] = [convened(FOUR, "FULL"), ...FOUR.map(done)];
+    expect(deriveDeliberationStage(events, "FULL")).toBe("comparing");
+  });
+
+  it("comparing when the comparing stage begins, even before the comparison result", () => {
+    const events: CouncilEvent[] = [convened(FOUR, "FULL"), { type: "stage", stage: "comparing" }];
+    expect(deriveDeliberationStage(events, "FULL")).toBe("comparing");
+  });
+
+  it("judging after the stage event", () => {
+    const events: CouncilEvent[] = [
+      convened(FOUR, "FULL"),
+      { type: "stage", stage: "comparing" },
+      {
+        type: "comparison",
+        comparison: {
+          agreements: [],
+          disagreements: [],
+          contradictions: [],
+          sharedAssumptions: [],
+          missingInformation: [],
+          risks: [],
+          uniqueInsights: [],
+          strongestArgument: "",
+          weakestArgument: "",
+          stanceCounts: { SUPPORT: 1, OPPOSE: 1, CONDITIONAL: 0, NEUTRAL: 2, INSUFFICIENT: 0 },
+        },
+        stage: "comparing",
+      },
+      { type: "stage", stage: "judging" },
+    ];
+    expect(deriveDeliberationStage(events, "FULL")).toBe("judging");
+  });
+});
+
+describe("deriveDeliberationStage — DEEP", () => {
+  it("walks the full deep pipeline: comparing → devils_advocate → reassessing → judging", () => {
+    const events: CouncilEvent[] = [convened(FOUR, "DEEP"), ...FOUR.map(done)];
+    expect(deriveDeliberationStage(events, "DEEP")).toBe("comparing");
+
+    events.push({ type: "stage", stage: "devils_advocate" });
+    expect(deriveDeliberationStage(events, "DEEP")).toBe("devils_advocate");
+
+    events.push({
+      type: "da:done",
+      analysis: {
+        agent: "devils_advocate",
+        name: "Devil's Advocate",
+        summary: "x",
+        strongestArgument: "a",
+        attemptToBreakIt: "b",
+        unsupportedAssumptions: [],
+        convergenceWarning: "",
+        minorityPoint: "",
+        evidenceThatWouldResolve: [],
+      },
+      stage: "devils_advocate",
+    });
+    expect(deriveDeliberationStage(events, "DEEP")).toBe("devils_advocate");
+
+    events.push({ type: "stage", stage: "reassessing" });
+    expect(deriveDeliberationStage(events, "DEEP")).toBe("reassessing");
+
+    events.push({ type: "stage", stage: "judging" });
+    expect(deriveDeliberationStage(events, "DEEP")).toBe("judging");
+  });
+});
+
+describe("stagesForMode", () => {
+  it("QUICK has no comparison", () => {
+    expect(stagesForMode("QUICK")).toEqual(["analyzing", "judging", "complete"]);
+  });
+  it("FULL adds comparison", () => {
+    expect(stagesForMode("FULL")).toEqual(["analyzing", "comparing", "judging", "complete"]);
+  });
+  it("DEEP adds challenge + reassessment", () => {
+    expect(stagesForMode("DEEP")).toEqual([
+      "analyzing",
+      "comparing",
+      "devils_advocate",
+      "reassessing",
+      "judging",
+      "complete",
+    ]);
+  });
+});
+
+describe("agentVisual", () => {
+  it("waiting → active → complete", () => {
+    let events: CouncilEvent[] = [];
+    expect(agentVisual(events, "reasoner").state).toBe("WAITING");
+
+    events = [{ type: "agent:start", agent: "reasoner", name: "Reasoner", stage: "analyzing" }];
+    expect(agentVisual(events, "reasoner").state).toBe("ACTIVE");
+    expect(agentVisual(events, "reasoner").chip).toBe("ANALYZING");
+
+    events = [{ type: "agent:done", analysis, stage: "analyzing" }];
+    expect(agentVisual(events, "reasoner").state).toBe("COMPLETE");
+    expect(agentVisual(events, "reasoner").chip).toBe("DONE");
+  });
+
+  it("failed when the analysis reports failure", () => {
+    const events: CouncilEvent[] = [
+      { type: "agent:done", analysis: { ...analysis, failed: true, error: "boom" }, stage: "analyzing" },
+    ];
+    expect(agentVisual(events, "reasoner").state).toBe("FAILED");
+  });
+
+  it("marks complete analyses as partial when degraded", () => {
+    const events: CouncilEvent[] = [
+      { type: "agent:done", analysis: { ...analysis, degraded: true }, stage: "analyzing" },
+    ];
+    expect(agentVisual(events, "reasoner").state).toBe("COMPLETE");
+    expect(agentVisual(events, "reasoner").statusText).toContain("partial");
+  });
+});
+
+describe("hasAnalysis", () => {
+  it("detects a completed analysis", () => {
+    expect(hasAnalysis([{ type: "agent:done", analysis, stage: "analyzing" }], "reasoner")).toBe(true);
+    expect(hasAnalysis([], "reasoner")).toBe(false);
+  });
+});
