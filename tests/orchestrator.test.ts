@@ -296,6 +296,97 @@ describe("runCouncil — resilience", () => {
     }
   });
 
+  // ── V0.2.2.3 (Parts 2-3): a *working* Judge that returns INSUFFICIENT_INFORMATION
+  // must NOT be accepted as a normal dead-end verdict. It is no longer in any
+  // type's allowed set, so the orchestrator routes it to the deterministic
+  // synthesizer — the user gets a useful provisional verdict instead. ────────
+
+  it("V0.2.2.3: Judge returning INSUFFICIENT_INFORMATION is routed to a PROVISIONAL verdict — never a dead end, never stance-counted", async () => {
+    const insufficient = JSON.stringify({
+      verdict: "INSUFFICIENT_INFORMATION",
+      score: 0,
+      confidence: 20,
+      informationSufficiency: "LOW",
+      summary: "I do not have enough information to decide.",
+      keyReasons: [],
+      agreements: [],
+      disagreements: [],
+      criticalUnknowns: ["market size"],
+      assumptions: [],
+      risks: [],
+      recommendedAction: "Get more information.",
+      whatWouldChangeVerdict: ["more data"],
+      reasoning: "Not enough information.",
+      whyThisVerdictWon: "",
+      strongestArgumentFor: "unknown",
+      strongestArgumentAgainst: "unknown",
+    });
+    const provider = makeProvider((input) => {
+      // Even though EVERY analyst supports the idea, the Judge copping out with
+      // INSUFFICIENT_INFORMATION must not end the session in a dead end — and
+      // must not be turned into a stance-counted BUILD either.
+      if (input.system.includes("JUDGE")) return insufficient;
+      if (input.system.includes("COMPARER")) return comparisonJson;
+      return agentJson({ stance: "SUPPORT" });
+    });
+    const events = await collect(
+      runCouncil({ mode: "FULL", question: "Should I build this app?", provider }),
+    );
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
+    if (verdict?.type === "verdict") {
+      // The dead-end category must NOT survive as a normal result.
+      expect(verdict.verdict.verdict).not.toBe("INSUFFICIENT_INFORMATION");
+      // It is an explicit degraded + provisional synthesis, not a vote count.
+      expect(verdict.verdict.degraded).toBe(true);
+      expect(verdict.verdict.provisional).toBe(true);
+      expect(verdict.verdict.verdict).not.toBe("BUILD");
+      // The synthesis still reports sufficiency honestly (driven by the actual
+      // unknowns across the surviving analyses, not inflated).
+      expect(["HIGH", "MEDIUM", "LOW"]).toContain(verdict.verdict.informationSufficiency);
+    }
+  });
+
+  it("V0.2.2.3: general-set question whose Judge says INSUFFICIENT_INFORMATION still gets a general-set provisional verdict", async () => {
+    const insufficient = JSON.stringify({
+      verdict: "INSUFFICIENT_INFORMATION",
+      score: 0,
+      confidence: 15,
+      informationSufficiency: "LOW",
+      summary: "I cannot decide.",
+      keyReasons: [],
+      agreements: [],
+      disagreements: [],
+      criticalUnknowns: [],
+      assumptions: [],
+      risks: [],
+      recommendedAction: "Ask later.",
+      whatWouldChangeVerdict: [],
+      reasoning: "Not enough.",
+      whyThisVerdictWon: "",
+      strongestArgumentFor: "unknown",
+      strongestArgumentAgainst: "unknown",
+    });
+    const provider = makeProvider((input) => {
+      if (input.system.includes("JUDGE")) return insufficient;
+      if (input.system.includes("COMPARER")) return comparisonJson;
+      return agentJson();
+    });
+    const events = await collect(
+      runCouncil({ mode: "FULL", question: "Why is the sky blue?", provider }),
+    );
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
+    if (verdict?.type === "verdict") {
+      expect(verdict.verdict.verdict).not.toBe("INSUFFICIENT_INFORMATION");
+      expect(verdict.verdict.degraded).toBe(true);
+      expect(verdict.verdict.provisional).toBe(true);
+      // General set — the provisional ceiling is VALIDATE, never a product-only
+      // category like BUILD_MVP/PIVOT/DO_NOT_BUILD.
+      expect(["VALIDATE", "RECONSIDER", "REJECT"].includes(verdict.verdict.verdict)).toBe(true);
+    }
+  });
+
   it("injects per-agent capability emphasis into every analytical prompt (V0.2.1 Part 5)", async () => {
     const calls: { system: string; user: string }[] = [];
     const provider: ModelProvider = {

@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import type { AgentKey, CouncilEvent, CouncilMode } from "@/lib/council/types";
 import {
   AlertIcon,
   BoltIcon,
   CheckIcon,
+  ChevronIcon,
   CompassIcon,
   EyeIcon,
   GavelIcon,
@@ -19,6 +20,7 @@ import {
   WrenchIcon,
   XIcon,
 } from "@/components/icons";
+import { AnalysisBody } from "./ExpandableAnalysis";
 import {
   agentVisual,
   chamberState,
@@ -124,6 +126,14 @@ function AgentCard({ events, agent }: { events: CouncilEvent[]; agent: AgentKey 
   const Icon = meta.icon;
   const v = agentVisual(events, agent);
   const active = v.state === "ACTIVE";
+  // V0.2.2.3 (Part 6): a member's analysis is inspectable as soon as it
+  // completes — the card expands inline while the rest of the Council runs.
+  const doneEvent = events.findLast(
+    (e): e is Extract<CouncilEvent, { type: "agent:done" }> =>
+      e.type === "agent:done" && e.analysis.agent === agent,
+  );
+  const expandable = v.state === "COMPLETE" || v.state === "FAILED";
+  const [open, setOpen] = useState(false);
 
   const tileClass =
     v.state === "FAILED"
@@ -158,38 +168,76 @@ function AgentCard({ events, agent }: { events: CouncilEvent[]; agent: AgentKey 
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3 }}
-      className={`flex items-center gap-3 rounded-xl border bg-card px-4 py-3.5 transition-colors ${cardClass}`}
+      className={`rounded-xl border bg-card transition-colors ${cardClass}`}
     >
-      <span
-        className={`relative flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border ${tileClass}`}
-      >
-        {v.state === "FAILED" ? (
-          <XIcon className="h-5 w-5" />
-        ) : v.state === "COMPLETE" ? (
-          <CheckIcon className="h-5 w-5" />
-        ) : (
-          <Icon className={`h-5 w-5 ${active ? "animate-breathe" : ""}`} />
-        )}
-        {active && (
-          <span
-            aria-hidden="true"
-            className="absolute inset-0 rounded-lg border border-brand/50"
-            style={{ animation: "ring-pulse 2.2s cubic-bezier(0.22,1,0.36,1) infinite" }}
-          />
-        )}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <p className="font-display text-sm font-semibold text-ink">{meta.label}</p>
-          {active && <SignalDots />}
+      <div className="flex items-center gap-3 px-4 py-3.5">
+        <span
+          className={`relative flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border ${tileClass}`}
+        >
+          {v.state === "FAILED" ? (
+            <XIcon className="h-5 w-5" />
+          ) : v.state === "COMPLETE" ? (
+            <CheckIcon className="h-5 w-5" />
+          ) : (
+            <Icon className={`h-5 w-5 ${active ? "animate-breathe" : ""}`} />
+          )}
+          {active && (
+            <span
+              aria-hidden="true"
+              className="absolute inset-0 rounded-lg border border-brand/50"
+              style={{ animation: "ring-pulse 2.2s cubic-bezier(0.22,1,0.36,1) infinite" }}
+            />
+          )}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <p className="font-display text-sm font-semibold text-ink">{meta.label}</p>
+            {active && <SignalDots />}
+          </div>
+          <p className="truncate text-xs text-ink-soft">{v.statusText}</p>
         </div>
-        <p className="truncate text-xs text-ink-soft">{v.statusText}</p>
+        <span
+          className={`shrink-0 rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider ${chipClass}`}
+        >
+          {v.chip}
+        </span>
+        {expandable && (
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={open}
+            aria-label={open ? `Hide ${meta.label} analysis` : `View ${meta.label} analysis`}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-line text-ink-soft transition-all hover:border-brand/40 hover:text-brand"
+          >
+            <ChevronIcon className={`h-3.5 w-3.5 transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+          </button>
+        )}
       </div>
-      <span
-        className={`shrink-0 rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider ${chipClass}`}
-      >
-        {v.chip}
-      </span>
+      <AnimatePresence initial={false}>
+        {expandable && open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.25 }}
+          >
+            <div className="border-t border-line px-4 py-3.5">
+              {v.state === "FAILED" ? (
+                <>
+                  <p className="text-xs text-ink-soft">{v.statusText}</p>
+                  {doneEvent?.analysis.error && (
+                    <p className="mt-1.5 rounded-lg bg-surface px-3 py-2 font-mono text-[11px] text-ink-soft">
+                      {doneEvent.analysis.error}
+                    </p>
+                  )}
+                </>
+              ) : doneEvent ? (
+                <AnalysisBody analysis={doneEvent.analysis} />
+              ) : null}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }

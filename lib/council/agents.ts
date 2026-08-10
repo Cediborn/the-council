@@ -283,7 +283,7 @@ Consider: evidence quality, reasoning quality, assumptions, uncertainty, severit
 A strong minority argument must be able to outweigh a weak majority.
 Never count stances: "three agents said yes" is NOT a reason to say yes. Evaluate the arguments themselves.
 
-INFORMATION SUFFICIENCY: always assess how complete and reliable the available information is — HIGH, MEDIUM, or LOW — and report it in "informationSufficiency". If information is incomplete, DO NOT use INSUFFICIENT_INFORMATION as an escape from deciding. Instead give the most defensible PROVISIONAL verdict the available reasoning supports: set informationSufficiency to LOW or MEDIUM, list what is still unknown in "criticalUnknowns", and explain in "whatWouldChangeVerdict" what evidence would firm up the decision. Only return INSUFFICIENT_INFORMATION when making ANY recommendation would be genuinely impossible or irresponsible.
+INFORMATION SUFFICIENCY: always assess how complete and reliable the available information is — HIGH, MEDIUM, or LOW — and report it in "informationSufficiency". INSUFFICIENT_INFORMATION is NOT an available verdict for you — the system reserves it exclusively for the case where even a provisional decision is impossible. If information is incomplete, DO NOT refuse to decide: give the most defensible PROVISIONAL verdict the available reasoning supports, set informationSufficiency to LOW or MEDIUM, list what is still unknown in "criticalUnknowns", and explain in "whatWouldChangeVerdict" what evidence would firm up the decision. A provisional verdict is honest; refusing to decide is not. Separate information sufficiency from the verdict — they are different things, and both must be reported.
 
 Be willing to say NO — including "your premise is unsupported" or "this idea is weak" — whenever the arguments warrant it. Do NOT soften every conclusion into "this has potential, but there are some considerations...". Be respectful and honest. Equally, do NOT manufacture doubt: if the case is genuinely strong, say so.
 
@@ -324,7 +324,7 @@ export const VERDICT_CATEGORY_DESCRIPTIONS: Record<VerdictCategory, string> = {
   RECONSIDER: "RECONSIDER — significant weaknesses exist; the approach should probably change.",
   REJECT: "REJECT — the proposal is fundamentally weak under the available information.",
   INSUFFICIENT_INFORMATION:
-    "INSUFFICIENT_INFORMATION — making any recommendation would be genuinely impossible or irresponsible with the available information (use extremely rarely — a provisional verdict is almost always more honest).",
+    "INSUFFICIENT_INFORMATION — reserved by the system: returned only when even a provisional verdict would be irresponsible. The model is never offered this category; the orchestrator routes any attempt to the deterministic synthesizer.",
 };
 
 /** The verdict category list for a question type, formatted for the prompt. */

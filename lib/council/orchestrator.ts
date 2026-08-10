@@ -851,6 +851,11 @@ async function runJudge(
     // malformed output, or a category outside the set allowed for THIS question
     // type — is replaced by an explicit PROVISIONAL verdict synthesized from
     // the surviving analyses. Never by stance counting, never a dead end.
+    //
+    // V0.2.2.3: INSUFFICIENT_INFORMATION is not in ANY type's allowed set, so a
+    // Judge returning it lands here too — the model can no longer use it as an
+    // escape hatch, and the synthesizer decides whether a provisional verdict
+    // is possible (it almost always is).
     if (!parsed.ok || !verdictsForType(classification.type).includes(parsed.data.verdict)) {
       usage.failedAgentCalls += 1;
       return synthesizeProvisionalVerdict({ question, questionType: classification.type, analyses, comparison });

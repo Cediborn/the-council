@@ -316,13 +316,20 @@ export type CouncilEvent =
       devilsAdvocate?: DevilAdvocateAnalysis | null;
     };
 
-/** Verdicts offered for product/business-flavoured questions (V0.2.2.2). */
+/**
+ * Verdicts offered for product/business-flavoured questions (V0.2.2.2).
+ *
+ * V0.2.2.3: INSUFFICIENT_INFORMATION is deliberately NOT in either model-facing
+ * set. The Judge must always produce a decision and report its uncertainty via
+ * informationSufficiency + criticalUnknowns; the no-verdict state is reserved
+ * exclusively for the deterministic synthesizer's genuinely-impossible case
+ * (zero completed analyses) so it can never be picked as an easy escape hatch.
+ */
 export const PRODUCT_VERDICTS: VerdictCategory[] = [
   "BUILD",
   "BUILD_MVP",
   "PIVOT",
   "DO_NOT_BUILD",
-  "INSUFFICIENT_INFORMATION",
 ];
 
 /** Verdicts offered for general questions (explanations, maths, arguments, …). */
@@ -332,7 +339,6 @@ export const GENERAL_VERDICTS: VerdictCategory[] = [
   "VALIDATE",
   "RECONSIDER",
   "REJECT",
-  "INSUFFICIENT_INFORMATION",
 ];
 
 /** Every category across both sets — used by the shared verdict schema. */
@@ -361,7 +367,12 @@ export const PRODUCT_TYPES: QuestionType[] = [
 /**
  * V0.2.2.2: which verdict categories a question may receive, by its type.
  * Product-flavoured questions (idea/proposal evaluation) use the product set;
- * everything else keeps the general set. INSUFFICIENT_INFORMATION is shared.
+ * everything else keeps the general set.
+ *
+ * V0.2.2.3: INSUFFICIENT_INFORMATION is NOT offered for ANY type — the Judge
+ * cannot return it, the orchestrator's set-enforcement routes any attempt to
+ * the deterministic synthesizer (which yields a provisional verdict from the
+ * surviving analyses, or the honest no-verdict state when nothing survived).
  */
 export function verdictsForType(type: QuestionType): VerdictCategory[] {
   return PRODUCT_TYPES.includes(type) ? PRODUCT_VERDICTS : GENERAL_VERDICTS;

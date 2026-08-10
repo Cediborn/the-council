@@ -206,12 +206,13 @@ describe("agent prompt contracts (V0.2.1 Parts 6-11, 16, 26, 27)", () => {
     expect(s).toMatch(/never count stances/i);
   });
 
-  it("V0.2.2.2: the Judge must give provisional verdicts instead of escaping into INSUFFICIENT_INFORMATION", () => {
+  it("V0.2.2.3: the Judge is told INSUFFICIENT_INFORMATION is NOT available to it — provisional verdicts with sufficiency instead", () => {
     const s = AGENTS.judge.system;
-    expect(s).toMatch(/DO NOT use INSUFFICIENT_INFORMATION as an escape/i);
+    expect(s).toMatch(/INSUFFICIENT_INFORMATION is NOT an available verdict/i);
     expect(s).toMatch(/provisional verdict/i);
     expect(s).toMatch(/informationSufficiency/i);
     expect(s).toMatch(/criticalUnknowns/i);
+    expect(s).toMatch(/separate information sufficiency from the verdict/i);
   });
 
   it("V0.2.2.2: the Judge output contract is type-dependent (Part 6)", () => {
@@ -241,7 +242,28 @@ describe("agent prompt contracts (V0.2.1 Parts 6-11, 16, 26, 27)", () => {
     expect(verdictsForType("decision")).toContain("PIVOT");
     expect(verdictsForType("explanation")).not.toContain("BUILD_MVP");
     expect(verdictsForType("explanation")).toContain("REFINE");
-    expect(verdictsForType("mathematical")).toContain("INSUFFICIENT_INFORMATION");
+    expect(verdictsForType("business")).not.toContain("REFINE");
+  });
+
+  it("V0.2.2.3: INSUFFICIENT_INFORMATION is never offered to the model for ANY question type", () => {
+    // The dead-end verdict is reserved for the deterministic synthesizer's
+    // genuinely-impossible case — the Judge can no longer pick it as an escape.
+    for (const type of [
+      "decision",
+      "explanation",
+      "comparison",
+      "technical",
+      "mathematical",
+      "educational",
+      "business",
+      "planning",
+      "creative",
+      "argumentative",
+      "troubleshooting",
+      "general",
+    ] as const) {
+      expect(verdictsForType(type)).not.toContain("INSUFFICIENT_INFORMATION");
+    }
   });
 
   it("the Comparer must name the strongest/weakest argument and classify disagreement nature", () => {

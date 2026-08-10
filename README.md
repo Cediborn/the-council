@@ -1,4 +1,4 @@
-# COUNCIL — V0.2.2.2
+# COUNCIL — V0.2.2.3
 
 A general-purpose, multi-agent **deliberation engine**. Ask it anything —
 everyday decisions, school questions, business ideas, code questions, life
@@ -49,16 +49,52 @@ argument can outweigh a weak majority. The verdict set depends on the question
 type (V0.2.2.2): product/business-flavoured questions (business, decision,
 planning, comparison, troubleshooting, creative) get `BUILD`, `BUILD_MVP`,
 `PIVOT`, `DO_NOT_BUILD`; everything else keeps `BUILD`, `REFINE`, `VALIDATE`,
-`RECONSIDER`, `REJECT`. `INSUFFICIENT_INFORMATION` is shared but rare.
+`RECONSIDER`, `REJECT`. `INSUFFICIENT_INFORMATION` is **never offered to the
+model** (V0.2.2.3): the Judge always returns a verdict and reports its
+uncertainty separately via `informationSufficiency` — the no-verdict state is
+reserved exclusively for the system's genuinely-impossible case (nothing to
+synthesize from).
+
+## V0.2.2.3 changes (stabilization & verification)
+
+This pass froze V0.2 by auditing the real pipeline against the documented
+behavior and closing the remaining gaps:
+
+- **INSUFFICIENT_INFORMATION can no longer be produced by the Judge.** The
+  forensic trace showed the escape-hatch verdict came from the Judge model
+  itself: it was listed as a valid category for *every* question type, so a
+  working Judge returning it passed validation and was rendered as a normal
+  dead-end card. V0.2.2.3 removes it from both verdict sets — the output
+  contract no longer offers it, the orchestrator routes any attempt to the
+  deterministic synthesizer, and only the genuinely-impossible case (zero
+  completed analyses) can ever yield it. **Information sufficiency is now
+  fully separated from the verdict**: the Judge always decides
+  (`BUILD`/`BUILD_MVP`/`PIVOT`/`DO_NOT_BUILD` or the general set) and reports
+  `HIGH`/`MEDIUM`/`LOW` + `criticalUnknowns` alongside it.
+- **Partial Councils are stated plainly.** When one or more analytical
+  members fail, the verdict card now shows a **"Partial Council — N
+  perspectives unavailable"** banner (naming the missing members) and the
+  position summary shows the unavailable count — the loss is never hidden,
+  nothing is fabricated, and each failed member stays retryable from its card.
+- **Analyses are inspectable as they complete.** The live deliberation
+  chamber's agent cards are now expandable the moment a member finishes — you
+  can read the first analysis while the rest of the Council is still working,
+  instead of waiting for the whole pipeline.
+- **Total failure is an infrastructure error, not an information verdict.**
+  If *every* analytical agent fails, the Council reports it as a recoverable
+  error ("Every analytical agent failed — the model provider may be
+  unreachable") with Try again — that is a provider outage, not
+  "insufficient information". The reserved no-verdict state therefore stays a
+  safety net for genuinely-impossible synthesis (e.g. restored legacy
+  sessions), and the Judge itself can never produce it.
 
 ## V0.2.2.2 changes (pipeline & UX fix)
 
-- **The Judge stops copping out.** `INSUFFICIENT_INFORMATION` is no longer an
-escape hatch: the Judge must always assess information sufficiency
-(`HIGH`/`MEDIUM`/`LOW`) and, when information is incomplete, deliver the most
-defensible **provisional verdict** with `criticalUnknowns` and
-`whatWouldChangeVerdict`. INSUFFICIENT_INFORMATION is reserved for when any
-recommendation would be genuinely irresponsible.
+- **The Judge stops copping out.** The Judge must always assess information
+sufficiency (`HIGH`/`MEDIUM`/`LOW`) and, when information is incomplete,
+deliver the most defensible **provisional verdict** with `criticalUnknowns`
+and `whatWouldChangeVerdict`. (V0.2.2.3 makes this structural: the category is
+no longer selectable by the model at all.)
 - **Judge failure never hides the Council's work.** When the Judge cannot
 produce a valid verdict (timeout, malformed output, provider failure), a
 deterministic **synthesizer** (`lib/council/synthesizer.ts`) reads the
@@ -300,11 +336,14 @@ tests/                        # unit tests (schemas, parsing, orchestrator, synt
   it reduces anchoring and groupthink.
 - **Resilience.** If one agent fails, the Council continues with the
   survivors (you can retry that single member), and the Judge is told to lower
-  confidence. If the Judge fails, no normal verdict is fabricated — the
-  Council returns an explicitly degraded **PROVISIONAL** verdict synthesized
+  confidence — the verdict shows a "Partial Council" banner naming what's
+  missing. If the Judge fails, no normal verdict is fabricated — the Council
+  returns an explicitly degraded **PROVISIONAL** verdict synthesized
   deterministically from the surviving analyses and preserves every completed
   analysis. The Council never counts stances and never derives a verdict from
-  majority opinion.
+  majority opinion, and `INSUFFICIENT_INFORMATION` is never selectable by the
+  Judge — the system alone decides when even a provisional verdict is
+  impossible.
 - **Untrusted model output.** Every structured response is validated with
   Zod; malformed output degrades gracefully (raw text is kept, never silently
   dropped). Safe parsing rescues fenced, truncated, or prose-wrapped JSON.

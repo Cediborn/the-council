@@ -3,6 +3,7 @@
 import { type CSSProperties } from "react";
 import { motion } from "framer-motion";
 import type {
+  AgentAnalysis,
   AgentKey,
   CouncilEvent,
   CouncilUsage,
@@ -215,10 +216,11 @@ function HowVerdictFormed({
   events: CouncilEvent[];
 }) {
   const comparison = events.findLast((e) => e.type === "comparison");
-  const analyses = events
-    .filter((e): e is Extract<CouncilEvent, { type: "agent:done" }> => e.type === "agent:done")
-    .map((e) => e.analysis)
-    .filter((a) => !a.failed);
+  const memberEvents = events.filter(
+    (e): e is Extract<CouncilEvent, { type: "agent:done" }> => e.type === "agent:done",
+  );
+  const analyses = memberEvents.map((e) => e.analysis).filter((a) => !a.failed);
+  const unavailableCount = memberEvents.filter((e) => e.analysis.failed).length;
 
   const counts = comparison?.comparison.stanceCounts ?? (() => {
     const c = { SUPPORT: 0, OPPOSE: 0, CONDITIONAL: 0, NEUTRAL: 0, INSUFFICIENT: 0 };
@@ -249,6 +251,11 @@ function HowVerdictFormed({
         <span className="font-semibold text-mint">{counts.SUPPORT ?? 0}</span> support ·{" "}
         <span className="font-semibold text-warn">{counts.CONDITIONAL ?? 0}</span> conditional ·{" "}
         <span className="font-semibold text-bad">{counts.OPPOSE ?? 0}</span> oppose
+        {unavailableCount > 0 && (
+          <>
+            {" "}· <span className="font-semibold text-bad">{unavailableCount} unavailable</span>
+          </>
+        )}
         {mainDisagreement && (
           <>
             {" "}· main disagreement: <span className="font-semibold text-ink">{mainDisagreement}</span>
@@ -332,6 +339,35 @@ function ProvisionalBanner({ verdict }: { verdict: CouncilVerdict }) {
             The final Judge could not complete its evaluation, so this verdict was synthesized
             deterministically from the surviving analyses — it is labelled degraded and was never
             derived from a vote count. The individual perspectives remain available below.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * V0.2.2.3 (Part 7/8) — one or more analytical members could not respond. The
+ * Council continued with the survivors, but the loss is stated plainly instead
+ * of being hidden: the verdict exists, and so does the honest count of what is
+ * missing. Per-member retry stays on the failed member's card below.
+ */
+function PartialCouncilBanner({ members }: { members: AgentAnalysis[] }) {
+  if (members.length === 0) return null;
+  return (
+    <div className="rounded-xl border border-warn/25 bg-warn/5 p-4">
+      <div className="flex items-start gap-3">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-warn/40 bg-warn/10 text-warn">
+          <AlertIcon className="h-4 w-4" />
+        </span>
+        <div>
+          <p className="font-display text-sm font-bold text-warn">
+            Partial Council — {members.length} perspective{members.length === 1 ? "" : "s"} unavailable
+          </p>
+          <p className="mt-0.5 text-xs leading-relaxed text-ink-soft">
+            {members.map((m) => m.name).join(", ")} could not respond, so the Judge weighed the
+            surviving perspectives and reduced its confidence accordingly. No missing analysis is
+            fabricated — retry the member from its card below if you want the full Council.
           </p>
         </div>
       </div>
@@ -514,6 +550,7 @@ export function VerdictView({
 }) {
   const meta = VERDICT_META[verdict.verdict];
   const analyses = events.filter((e): e is Extract<CouncilEvent, { type: "agent:done" }> => e.type === "agent:done");
+  const failedMembers = analyses.map((e) => e.analysis).filter((a) => a.failed);
   const daEvent = events.findLast((e) => e.type === "da:done");
   const dot = SECTION_DOT[meta.tone];
 
@@ -541,6 +578,10 @@ export function VerdictView({
 
       <Reveal delay={0.24}>
         <ProvisionalBanner verdict={verdict} />
+      </Reveal>
+
+      <Reveal delay={0.27}>
+        <PartialCouncilBanner members={failedMembers} />
       </Reveal>
 
       <Reveal

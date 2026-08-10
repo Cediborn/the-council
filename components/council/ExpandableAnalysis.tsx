@@ -155,6 +155,31 @@ function BulletList({ title, items }: { title: string; items: string[] }) {
 }
 
 /**
+ * V0.2.2.3 — the shared analysis body, reused by the terminal surfaces AND the
+ * live deliberation chamber so a completed member is inspectable as soon as it
+ * finishes (Part 6), not only after the whole Council settles.
+ */
+export function AnalysisBody({ analysis }: { analysis: AgentAnalysis }) {
+  return (
+    <>
+      {analysis.degraded && (
+        <p className="mb-2 rounded-lg bg-warn/10 px-3 py-2 text-xs text-warn">
+          This analysis could not be fully structured and is shown as raw text.
+        </p>
+      )}
+      <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink">{analysis.summary}</p>
+      <BulletList title="Key points" items={analysis.keyPoints} />
+      <BulletList title="Assumptions" items={analysis.assumptions} />
+      <BulletList title="Risks" items={analysis.risks} />
+      <BulletList title="Missing information" items={analysis.missingInformation} />
+      {analysis.retries ? (
+        <p className="mt-3 text-[11px] text-ink-soft">Retried {analysis.retries}× before responding.</p>
+      ) : null}
+    </>
+  );
+}
+
+/**
  * V0.2.2.2 (Part 3) — the standard member analysis view used by the verdict,
  * degraded, error, and cancelled surfaces.
  */
@@ -183,19 +208,7 @@ export function ExpandableAnalysis({
 
   return (
     <ExpandableCard icon={Icon} title={analysis.name} meta={meta} openLabel="Hide analysis" closedLabel="View analysis">
-      {analysis.degraded && (
-        <p className="mb-2 rounded-lg bg-warn/10 px-3 py-2 text-xs text-warn">
-          This analysis could not be fully structured and is shown as raw text.
-        </p>
-      )}
-      <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink">{analysis.summary}</p>
-      <BulletList title="Key points" items={analysis.keyPoints} />
-      <BulletList title="Assumptions" items={analysis.assumptions} />
-      <BulletList title="Risks" items={analysis.risks} />
-      <BulletList title="Missing information" items={analysis.missingInformation} />
-      {analysis.retries ? (
-        <p className="mt-3 text-[11px] text-ink-soft">Retried {analysis.retries}× before responding.</p>
-      ) : null}
+      <AnalysisBody analysis={analysis} />
     </ExpandableCard>
   );
 }

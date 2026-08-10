@@ -155,6 +155,13 @@ export const devilsAdvocateSchema = z.object({
  * the question-type-specific set: a category outside the allowed set is
  * treated as malformed and falls back to the deterministic synthesizer).
  * Missing fields coerce gracefully so malformed output never crashes the UI.
+ *
+ * V0.2.2.3: INSUFFICIENT_INFORMATION intentionally remains in the union even
+ * though no question type offers it — the orchestrator's per-type enforcement
+ * routes any attempt to the synthesizer (a provisional verdict), while the
+ * synthesizer itself is the only producer of the reserved no-verdict state
+ * (zero completed analyses). The schema validates *model output*; it does not
+ * define what the model may choose.
  */
 export const verdictSchema = z.object({
   verdict: z.enum(ALL_VERDICTS as [VerdictCategory, ...VerdictCategory[]]),
