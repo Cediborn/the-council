@@ -14,6 +14,7 @@ import {
   BoltIcon,
   CompassIcon,
   EyeIcon,
+  GavelIcon,
   HourglassIcon,
   PedestalIcon,
   RotateIcon,
@@ -304,7 +305,7 @@ function DevilsAdvocateCard({
         aria-expanded={open}
         className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-surface"
       >
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-tangerine/40 bg-tangerine/10 text-tangerine">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-brand/40 bg-brand/10 text-brand">
           <BoltIcon className="h-4 w-4" />
         </span>
         <div className="min-w-0 flex-1">
@@ -578,13 +579,30 @@ export function VerdictView({
 
   return (
     <section className="animate-fade-up">
+      {/* V0.2.2.1 (Part 16): a brief interstitial — the deliberation settles
+          before the verdict card reveals. Purely presentational; the verdict
+          state itself never waits on it. */}
       <Reveal delay={0} className="text-center">
-        <p className="font-mono text-[11px] uppercase tracking-[0.3em] text-brand">Deliberation complete</p>
-        <h2 className="mt-2 font-display text-3xl font-bold tracking-tight text-ink">COUNCIL VERDICT</h2>
+        <motion.div
+          initial={{ scale: 0.7, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ type: "spring", stiffness: 240, damping: 18 }}
+          className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-brand/30 bg-brand/5 text-brand shadow-gold"
+          aria-hidden="true"
+        >
+          <GavelIcon className="h-6 w-6" />
+        </motion.div>
+        <p className="mt-3 font-mono text-[11px] uppercase tracking-[0.3em] text-brand">
+          Deliberation complete
+        </p>
+      </Reveal>
+
+      <Reveal delay={0.18} className="text-center">
+        <h2 className="font-display text-3xl font-bold tracking-tight text-ink">COUNCIL VERDICT</h2>
       </Reveal>
 
       <Reveal
-        delay={0.08}
+        delay={0.26}
         className={`verdict-tone mt-6 rounded-2xl border p-6 shadow-card sm:p-8`}
         style={{ "--tone": `var(--color-${meta.tone})` } as CSSProperties}
       >
@@ -635,48 +653,48 @@ export function VerdictView({
         </div>
       </Reveal>
 
-      <Reveal delay={0.2} className="mt-4">
+      <Reveal delay={0.36} className="mt-4">
         <AgreementSummary events={events} />
       </Reveal>
 
-      <Reveal delay={0.26} className="mt-6 grid gap-3 sm:grid-cols-2">
+      <Reveal delay={0.42} className="mt-6 grid gap-3 sm:grid-cols-2">
         <VerdictSection title="Key agreements" items={verdict.keyAgreements} dotClass="bg-mint" />
         <VerdictSection title="Key disagreements" items={verdict.keyDisagreements} dotClass="bg-bad" />
         <VerdictSection title="Critical assumptions" items={verdict.criticalAssumptions} dotClass={SECTION_DOT.achievement} />
         <VerdictSection title="Critical risks" items={verdict.criticalRisks} dotClass={SECTION_DOT.warn} />
       </Reveal>
 
-      <Reveal delay={0.32}>
+      <Reveal delay={0.48}>
         <ComparisonExtras events={events} />
       </Reveal>
 
       {usage.mode === "DEEP" && (
-        <Reveal delay={0.36} className="mt-4">
+        <Reveal delay={0.52} className="mt-4">
           <ReassessmentCard events={events} />
         </Reveal>
       )}
 
-      <Reveal delay={0.4} className="mt-3 rounded-xl border border-line bg-surface p-4">
+      <Reveal delay={0.56} className="mt-3 rounded-xl border border-line bg-surface p-4">
         <h3 className="font-display text-xs font-bold uppercase tracking-widest text-ink-soft">Recommended action</h3>
         <p className="mt-1.5 text-sm leading-relaxed text-ink">{verdict.recommendedAction}</p>
       </Reveal>
 
-      <Reveal delay={0.44}>
+      <Reveal delay={0.6}>
         <VerdictSection title="What would change our mind" items={verdict.whatWouldChangeTheVerdict} dotClass={dot} />
       </Reveal>
 
-      <Reveal delay={0.48} className="mt-3 rounded-xl border border-line bg-surface p-4">
+      <Reveal delay={0.64} className="mt-3 rounded-xl border border-line bg-surface p-4">
         <h3 className="font-display text-xs font-bold uppercase tracking-widest text-ink-soft">Why this verdict won</h3>
         <p className="mt-1.5 text-sm leading-relaxed text-ink">{verdict.whyThisVerdictWon}</p>
       </Reveal>
 
-      <Reveal delay={0.52} className="mt-3 rounded-xl border border-line bg-surface p-4">
+      <Reveal delay={0.68} className="mt-3 rounded-xl border border-line bg-surface p-4">
         <h3 className="font-display text-xs font-bold uppercase tracking-widest text-ink-soft">Reasoning</h3>
         <p className="mt-1.5 text-sm leading-relaxed text-ink">{verdict.reasoning}</p>
       </Reveal>
 
       {/* ── Individual perspectives ─────────────────────────────── */}
-      <Reveal delay={0.56} className="mt-8">
+      <Reveal delay={0.72} className="mt-8">
         <div className="flex items-center justify-between">
           <h3 className="font-display text-lg font-bold text-ink">The perspectives</h3>
           <span className="text-xs text-ink-soft">Expand each analysis</span>
@@ -690,7 +708,7 @@ export function VerdictView({
       </Reveal>
 
       {/* ── Session meta ────────────────────────────────────────── */}
-      <Reveal delay={0.6} className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[11px] text-ink-soft">
+      <Reveal delay={0.76} className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[11px] text-ink-soft">
         <span>Mode: <span className="font-mono uppercase">{usage.mode}</span></span>
         <span aria-hidden="true">·</span>
         <span>Model: <span className="font-mono">{usage.provider}/{usage.model}</span></span>

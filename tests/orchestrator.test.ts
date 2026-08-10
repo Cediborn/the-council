@@ -344,4 +344,88 @@ describe("runCouncil — resilience", () => {
       }
     }).rejects.toThrow();
   });
+
+  // ── V0.2.2.1 (Part 2/3): the Judge-failure matrix — every failure mode
+  // yields INSUFFICIENT_INFORMATION, never a stance-counted verdict. ──────
+
+  it("returns degraded INSUFFICIENT_INFORMATION when the judge emits malformed JSON — never counts stances", async () => {
+    const provider = makeProvider((input) => {
+      if (input.system.includes("JUDGE")) return '{ verdict: "BUILD", score: "eight" , ';
+      if (input.system.includes("COMPARER")) return comparisonJson;
+      // All analysts SUPPORT — a vote count would produce BUILD.
+      return agentJson({ stance: "SUPPORT" });
+    });
+    const events = await collect(
+      runCouncil({ mode: "FULL", question: "Is this a good idea?", provider }),
+    );
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
+    if (verdict?.type === "verdict") {
+      expect(verdict.verdict.degraded).toBe(true);
+      expect(verdict.verdict.verdict).toBe("INSUFFICIENT_INFORMATION");
+      expect(verdict.verdict.score).toBe(0);
+      expect(verdict.verdict.reasoning).toMatch(/degraded/i);
+      // The surviving analyses are preserved on the verdict (they are the
+      // input to the fallback), and no BUILD is fabricated from the votes.
+      expect(verdict.verdict.summary).not.toMatch(/BUILD/i);
+    }
+  });
+
+  it("returns degraded INSUFFICIENT_INFORMATION when the judge times out", async () => {
+    const provider = makeProvider((input) => {
+      if (input.system.includes("JUDGE")) throw new Error("timeout after 60s");
+      if (input.system.includes("COMPARER")) return comparisonJson;
+      return agentJson();
+    });
+    const events = await collect(
+      runCouncil({ mode: "FULL", question: "Is this a good idea?", provider }),
+    );
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
+    if (verdict?.type === "verdict") {
+      expect(verdict.verdict.degraded).toBe(true);
+      expect(verdict.verdict.verdict).toBe("INSUFFICIENT_INFORMATION");
+      expect(verdict.usage.failedAgentCalls).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it("returns degraded INSUFFICIENT_INFORMATION when the judge returns an empty response", async () => {
+    const provider = makeProvider((input) => {
+      if (input.system.includes("JUDGE")) return "";
+      if (input.system.includes("COMPARER")) return comparisonJson;
+      return agentJson();
+    });
+    const events = await collect(
+      runCouncil({ mode: "FULL", question: "Is this a good idea?", provider }),
+    );
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
+    if (verdict?.type === "verdict") {
+      expect(verdict.verdict.degraded).toBe(true);
+      expect(verdict.verdict.verdict).toBe("INSUFFICIENT_INFORMATION");
+      expect(verdict.verdict.recommendedAction).toMatch(/Retry|check/i);
+    }
+  });
+
+  it("preserves completed analyses when the run throws a CouncilRunError", async () => {
+    const provider = makeProvider((input) => {
+      if (input.system.includes("REASONER")) throw new Error("reasoner down");
+      if (input.system.includes("SKEPTIC")) throw new Error("skeptic down");
+      if (input.system.includes("PRACTICALIST")) throw new Error("practicalist down");
+      if (input.system.includes("PERSPECTIVE")) throw new Error("perspective down");
+      return agentJson();
+    });
+    let thrown: unknown;
+    try {
+      for await (const _ of runCouncil({ mode: "FULL", question: "x", provider })) {
+        // drain
+      }
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeDefined();
+    const err = thrown as { name?: string; analyses?: unknown[]; message?: string };
+    expect(err.name).toBe("CouncilRunError");
+    expect(err.analyses).toBeDefined();
+  });
 });

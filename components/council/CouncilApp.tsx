@@ -8,6 +8,7 @@ import type { AgentAnalysis } from "@/lib/council/types";
 import { QuestionScreen } from "./QuestionScreen";
 import { DeliberationPanel } from "./DeliberationPanel";
 import { VerdictView } from "./VerdictView";
+import { InsufficientPanel } from "./InsufficientPanel";
 import { ChallengeButton } from "./ChallengeButton";
 import { AlertIcon, RotateIcon } from "@/components/icons";
 
@@ -117,33 +118,53 @@ export function CouncilApp() {
             </motion.div>
           )}
 
-          {council.phase === "complete" && council.lastVerdict && (
-            <motion.div
-              key="verdict"
-              initial={{ opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.4 }}
-              className="flex flex-col gap-6"
-            >
-              <VerdictView
-                verdict={council.lastVerdict.verdict}
-                usage={council.lastVerdict.usage}
-                events={council.events}
-              />
-              <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <button
-                  onClick={council.reset}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-line bg-surface px-5 py-3 text-sm font-semibold text-ink transition-all hover:border-brand/50 hover:text-brand"
-                >
-                  Ask another question
-                </button>
-                <ChallengeButton
-                  visible={showChallenge}
-                  onToggle={() => setShowChallenge((v) => !v)}
+          {council.phase === "complete" && council.lastVerdict &&
+            // V0.2.2.1 (Part 16): a degraded INSUFFICIENT_INFORMATION verdict
+            // (Judge failure) renders the distinct failure panel — never the
+            // normal verdict card, and never BUILD/REFINE/VALIDATE/RECONSIDER/REJECT.
+            (council.lastVerdict.verdict.degraded ? (
+              <motion.div
+                key="insufficient"
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.4 }}
+                className="flex flex-1 flex-col justify-center"
+              >
+                <InsufficientPanel
+                  preserved={completedAnalyses(council.events)}
+                  onRetry={() => {
+                    if (council.question && council.mode) council.run(council.question, council.mode);
+                  }}
+                  onReset={council.reset}
                 />
-              </div>
-            </motion.div>
-          )}
+              </motion.div>
+            ) : (
+              <motion.div
+                key="verdict"
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.4 }}
+                className="flex flex-col gap-6"
+              >
+                <VerdictView
+                  verdict={council.lastVerdict.verdict}
+                  usage={council.lastVerdict.usage}
+                  events={council.events}
+                />
+                <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <button
+                    onClick={council.reset}
+                    className="inline-flex items-center justify-center gap-2 rounded-xl border border-line bg-surface px-5 py-3 text-sm font-semibold text-ink transition-all hover:border-brand/50 hover:text-brand"
+                  >
+                    Ask another question
+                  </button>
+                  <ChallengeButton
+                    visible={showChallenge}
+                    onToggle={() => setShowChallenge((v) => !v)}
+                  />
+                </div>
+              </motion.div>
+            ))}
         </AnimatePresence>
       </div>
     </MotionConfig>

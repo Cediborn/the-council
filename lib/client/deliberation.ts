@@ -118,3 +118,63 @@ export function agentVisual(events: CouncilEvent[], agent: AgentKey): AgentVisua
   }
   return { state: "WAITING", statusText: "Awaiting assignment", chip: "WAITING" };
 }
+
+/**
+ * COUNCIL V0.2.2.1 — the central Council node's visual state (Part 6).
+ *
+ * IDLE       — nothing underway yet (dim).
+ * ACTIVE     — analysts are working (soft gold pulse).
+ * PROMINENT  — comparison / stress-test / judge stages (the Council converges).
+ * SETTLED    — a verdict has arrived (stable).
+ */
+export type ChamberNodeState = "IDLE" | "ACTIVE" | "PROMINENT" | "SETTLED";
+
+/**
+ * COUNCIL V0.2.2.1 — the agent→node connection lines' visual state (Part 7).
+ *
+ * OFF    — no chamber geometry (QUICK, or nothing convened yet).
+ * FAINT  — thin warm-grey lines during independent analysis (agents isolated).
+ * ACTIVE — gold + animated once comparison / deliberation begins (convergence).
+ */
+export type ChamberLineState = "OFF" | "FAINT" | "ACTIVE";
+
+export interface ChamberState {
+  node: ChamberNodeState;
+  lines: ChamberLineState;
+}
+
+/**
+ * Derived purely from received events + mode — never from animation timers.
+ * QUICK has no chamber geometry at all (Part 5: the geometry is FULL/DEEP).
+ */
+export function chamberState(events: CouncilEvent[], mode: CouncilMode): ChamberState {
+  if (mode === "QUICK") return { node: "IDLE", lines: "OFF" };
+
+  if (events.some((e) => e.type === "verdict")) {
+    return { node: "SETTLED", lines: "FAINT" };
+  }
+
+  const stage = deriveDeliberationStage(events, mode);
+  const converging =
+    stage === "comparing" ||
+    stage === "devils_advocate" ||
+    stage === "reassessing" ||
+    stage === "judging";
+
+  const lines: ChamberLineState = converging ? "ACTIVE" : "FAINT";
+
+  let node: ChamberNodeState = "IDLE";
+  if (converging) {
+    node = "PROMINENT";
+  } else if (stage === "analyzing") {
+    // An analyst is ACTIVE until its own agent:done arrives.
+    const anyActive = events.some(
+      (e) =>
+        e.type === "agent:start" &&
+        !events.some((d) => d.type === "agent:done" && d.analysis.agent === e.agent),
+    );
+    node = anyActive ? "ACTIVE" : "IDLE";
+  }
+
+  return { node, lines };
+}

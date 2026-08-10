@@ -1,4 +1,4 @@
-# COUNCIL — V0.2.2
+# COUNCIL — V0.2.2.1
 
 A general-purpose, multi-agent **deliberation engine**. Ask it anything —
 everyday decisions, school questions, business ideas, code questions, life
@@ -81,6 +81,29 @@ argument can outweigh a weak majority. Verdicts: `BUILD`, `REFINE`,
 - **Anti-yes-man & anti-contrarian prompt contracts** are pinned by
   deterministic tests, and the general-question battery (math, code,
   purchases, university, relationships, arguments…) is covered by tests too.
+
+## V0.2.2.1 changes (the chamber refinement)
+
+- **Judge failure is now unmistakable.** When the Judge cannot safely produce a
+  verdict (timeout, provider failure, malformed output, empty response), the
+  Council returns an explicitly degraded `INSUFFICIENT_INFORMATION` — and the UI
+  renders a **distinct result panel** (never the normal verdict card, never
+  `BUILD`/`REFINE`/`VALIDATE`/`RECONSIDER`/`REJECT`). Completed analyses are
+  preserved, `[TRY AGAIN]` re-convenes the Council, `[NEW QUESTION]` resets. The
+  no-majority-vote rule is now pinned by a regression matrix in the tests.
+- **The chamber geometry.** In FULL and DEEP modes the four perspectives now sit
+  around a central **Council node** (the gavel seal) with radiating connection
+  lines — faint warm-grey while the agents analyze independently, gold and
+  drawn-in once the Council converges (comparison → stress-test → judge). The
+  node breathes while agents work and settles once the verdict lands. QUICK
+  keeps the plain grid; mobile keeps the small node and drops the lines.
+- **Devil's Advocate restyled.** The stress-test moment now uses gold outline +
+  a small warning triangle instead of tangerine — adversarial, but inside the
+  black/gold identity.
+- **Earned verdict.** A brief "Deliberation complete" interstitial (gavel
+  settles in) now precedes the staged verdict reveal.
+- **Verdict reveal timeline** was re-spaced so the interstitial, the card, and
+  each section still reveal in order.
 
 ## V0.2.2 changes (deliberation experience & visual identity)
 

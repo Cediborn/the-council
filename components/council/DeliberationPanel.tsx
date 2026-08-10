@@ -4,10 +4,12 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import type { AgentKey, CouncilEvent, CouncilMode } from "@/lib/council/types";
 import {
+  AlertIcon,
   BoltIcon,
   CheckIcon,
   CompassIcon,
   EyeIcon,
+  GavelIcon,
   HourglassIcon,
   NodesIcon,
   PedestalIcon,
@@ -19,6 +21,7 @@ import {
 } from "@/components/icons";
 import {
   agentVisual,
+  chamberState,
   deriveDeliberationStage,
   stagesForMode,
   STAGE_LABELS,
@@ -49,17 +52,16 @@ const STAGE_TITLES: Record<DeliberationStageId, string> = {
   complete: "Deliberation complete",
 };
 
-const STAGE_DESCRIPTIONS: Record<DeliberationStageId, string> = {
-  analyzing: "Each perspective works independently — no agent sees another's answer.",
-  comparing: "Surfacing agreements, contradictions and the real disagreement.",
-  devils_advocate: "Trying to break the Council's own best argument.",
-  reassessing: "Re-evaluating positions in light of the challenge.",
-  judging: "Weighing argument quality — never counting votes.",
-  complete: "The Council has reached its verdict.",
-};
-
 /** The judge's deliberation sub-steps (Part 15) — shown while the judge is active. */
 const JUDGE_SUBSTEPS = ["Weighing evidence", "Reviewing dissent", "Calibrating confidence"];
+
+/** Radiating spokes from the central Council node toward the four card quadrants (Part 7). */
+const CHAMBER_SPOKES = [
+  { d: "M 32 32 L 7 7" },
+  { d: "M 32 32 L 57 7" },
+  { d: "M 32 32 L 7 57" },
+  { d: "M 32 32 L 57 57" },
+];
 
 function StagePipeline({ mode, stage }: { mode: CouncilMode; stage: DeliberationStageId }) {
   const stages = stagesForMode(mode);
@@ -192,6 +194,100 @@ function AgentCard({ events, agent }: { events: CouncilEvent[]; agent: AgentKey 
   );
 }
 
+/**
+ * V0.2.2.1 — the central Council node (Part 6) + radiating connection lines
+ * (Part 7). FULL/DEEP only: the four agents sit around the node and the spokes
+ * brighten into gold once the Council converges (comparison → judge). QUICK
+ * keeps the plain grid. Mobile keeps the small node and drops the lines.
+ */
+function CouncilChamber({
+  events,
+  agents,
+  mode,
+}: {
+  events: CouncilEvent[];
+  agents: AgentKey[];
+  mode: CouncilMode;
+}) {
+  const chamber = chamberState(events, mode);
+  const node = chamber.node;
+  const linesActive = chamber.lines === "ACTIVE";
+  const lively = node === "ACTIVE" || node === "PROMINENT";
+
+  const nodeRingClass =
+    node === "SETTLED"
+      ? "border-brand/50 text-brand"
+      : node === "PROMINENT"
+        ? "border-brand/70 text-brand shadow-gold animate-glow"
+        : node === "ACTIVE"
+          ? "border-brand/60 text-brand animate-glow"
+          : "border-line text-ink-soft/60";
+
+  const top = agents.slice(0, 2);
+  const bottom = agents.slice(2);
+
+  return (
+    <motion.div layout className="relative mt-6">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-x-3 sm:gap-y-1">
+        {top.map((agent) => (
+          <AgentCard key={agent} events={events} agent={agent} />
+        ))}
+
+        {/* The Council node row — sits between the two rows of perspectives. */}
+        <div className="col-span-1 flex justify-center sm:col-span-2">
+          <div
+            className="relative flex h-11 w-11 items-center justify-center sm:h-14 sm:w-14"
+            aria-hidden="true"
+          >
+            {/* Connection lines are desktop-only (Part 21): mobile keeps the
+                small node and drops the lines. */}
+            <svg
+              className="absolute inset-0 hidden h-full w-full sm:block"
+              viewBox="0 0 64 64"
+              fill="none"
+              strokeLinecap="round"
+            >
+              {CHAMBER_SPOKES.map((s, i) => (
+                <motion.path
+                  key={i}
+                  d={s.d}
+                  stroke={linesActive ? "var(--color-brand)" : "var(--color-line)"}
+                  strokeWidth={1}
+                  initial={{ pathLength: 0, opacity: linesActive ? 0 : 0.35 }}
+                  animate={{
+                    pathLength: linesActive ? 1 : 0.3,
+                    opacity: linesActive ? 0.9 : 0.3,
+                  }}
+                  transition={{ duration: 0.9, delay: linesActive ? i * 0.12 : 0, ease: "easeInOut" }}
+                />
+              ))}
+            </svg>
+            <span
+              className={`relative z-10 flex h-8 w-8 items-center justify-center rounded-full border bg-card transition-all duration-300 sm:h-9 sm:w-9 ${nodeRingClass}`}
+            >
+              <GavelIcon className={`h-3.5 w-3.5 sm:h-4 sm:w-4 ${lively ? "animate-breathe" : ""}`} />
+              {lively && (
+                <span
+                  aria-hidden="true"
+                  className="absolute inset-0 rounded-full border border-brand/50"
+                  style={{ animation: "ring-pulse 2.4s cubic-bezier(0.22,1,0.36,1) infinite" }}
+                />
+              )}
+            </span>
+          </div>
+        </div>
+
+        {bottom.map((agent) => (
+          <AgentCard key={agent} events={events} agent={agent} />
+        ))}
+      </div>
+      <p className="mt-1 text-center font-mono text-[9px] uppercase tracking-[0.3em] text-brand/70">
+        The Council
+      </p>
+    </motion.div>
+  );
+}
+
 function ComparisonMoment({ events }: { events: CouncilEvent[] }) {
   const comparison = events.findLast((e) => e.type === "comparison");
   const fundamental = comparison?.comparison.disagreements.find((d) => d.nature === "FUNDAMENTAL");
@@ -257,21 +353,33 @@ function ComparisonMoment({ events }: { events: CouncilEvent[] }) {
   );
 }
 
+/**
+ * V0.2.2.1 (Part 12) — gold + subtle warning geometry instead of tangerine:
+ * the stress-test stays inside the black/gold identity, with a small triangle
+ * signalling the adversarial role.
+ */
 function DevilsAdvocateMoment({ events }: { events: CouncilEvent[] }) {
   const da = events.findLast((e) => e.type === "da:done");
+  const active = !da;
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.35 }}
-      className="rounded-xl border border-tangerine/30 bg-card p-4"
+      className={`rounded-xl border bg-card p-4 ${
+        active ? "border-brand/40 bg-gradient-to-b from-surface to-card" : "border-brand/25"
+      }`}
     >
       <div className="flex items-center gap-3">
-        <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-tangerine/40 bg-tangerine/10 text-tangerine">
-          <BoltIcon className="h-5 w-5" />
+        <span className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-brand/40 bg-brand/10 text-brand">
+          <BoltIcon className={`h-5 w-5 ${active ? "animate-breathe" : ""}`} />
+          {/* warning geometry — the adversarial role, kept gold */}
+          <span className="absolute -right-1.5 -top-1.5 flex h-3.5 w-3.5 items-center justify-center rounded-full border border-brand/50 bg-card">
+            <AlertIcon className="h-2 w-2 text-brand" />
+          </span>
         </span>
         <div className="min-w-0 flex-1">
-          <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-tangerine">
+          <p className="font-mono text-[10px] uppercase tracking-[0.25em] text-brand">
             {da ? "Stress-test complete" : "Devil's Advocate"}
           </p>
           <p className="mt-0.5 text-xs text-ink-soft">
@@ -435,17 +543,17 @@ export function DeliberationPanel({
         <StagePipeline mode={mode} stage={stage} />
       </div>
 
-      {/* Agent grid */}
-      {convened && (
-        <motion.div
-          layout
-          className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2"
-        >
-          {convened.agents.map((agent) => (
-            <AgentCard key={agent} events={events} agent={agent} />
-          ))}
-        </motion.div>
-      )}
+      {/* Agent chamber (FULL/DEEP radial) or plain grid (QUICK) */}
+      {convened &&
+        (mode === "QUICK" ? (
+          <motion.div layout className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {convened.agents.map((agent) => (
+              <AgentCard key={agent} events={events} agent={agent} />
+            ))}
+          </motion.div>
+        ) : (
+          <CouncilChamber events={events} agents={convened.agents} mode={mode} />
+        ))}
 
       {/* Stage moments */}
       <div className="mt-4 flex flex-col gap-3">

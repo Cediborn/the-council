@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   agentVisual,
+  chamberState,
   deriveDeliberationStage,
   hasAnalysis,
   stagesForMode,
@@ -187,5 +188,66 @@ describe("hasAnalysis", () => {
   it("detects a completed analysis", () => {
     expect(hasAnalysis([{ type: "agent:done", analysis, stage: "analyzing" }], "reasoner")).toBe(true);
     expect(hasAnalysis([], "reasoner")).toBe(false);
+  });
+});
+
+describe("chamberState — V0.2.2.1", () => {
+  it("QUICK has no chamber geometry at all", () => {
+    expect(chamberState([], "QUICK")).toEqual({ node: "IDLE", lines: "OFF" });
+    expect(chamberState([{ type: "stage", stage: "judging" }], "QUICK")).toEqual({
+      node: "IDLE",
+      lines: "OFF",
+    });
+  });
+
+  it("FULL: node ACTIVE + lines FAINT while an analyst works", () => {
+    const events: CouncilEvent[] = [
+      convened(FOUR, "FULL"),
+      { type: "agent:start", agent: "reasoner", name: "Reasoner", stage: "analyzing" },
+    ];
+    expect(chamberState(events, "FULL")).toEqual({ node: "ACTIVE", lines: "FAINT" });
+  });
+
+  it("FULL: node IDLE before any analyst starts", () => {
+    expect(chamberState([convened(FOUR, "FULL")], "FULL")).toEqual({
+      node: "IDLE",
+      lines: "FAINT",
+    });
+  });
+
+  it("FULL: node PROMINENT + lines ACTIVE once comparing begins", () => {
+    const events: CouncilEvent[] = [convened(FOUR, "FULL"), ...FOUR.map(done)];
+    expect(chamberState(events, "FULL")).toEqual({ node: "PROMINENT", lines: "ACTIVE" });
+  });
+
+  it("FULL: stays converged through judging", () => {
+    const events: CouncilEvent[] = [
+      convened(FOUR, "FULL"),
+      ...FOUR.map(done),
+      { type: "stage", stage: "comparing" },
+      { type: "stage", stage: "judging" },
+    ];
+    expect(chamberState(events, "FULL")).toEqual({ node: "PROMINENT", lines: "ACTIVE" });
+  });
+
+  it("FULL: node SETTLED, lines settle once the verdict arrives", () => {
+    const events: CouncilEvent[] = [
+      convened(FOUR, "FULL"),
+      ...FOUR.map(done),
+      { type: "stage", stage: "judging" },
+      { type: "verdict", verdict: { verdict: "BUILD" } as never, usage: {} as never, stage: "complete" },
+    ];
+    expect(chamberState(events, "FULL")).toEqual({ node: "SETTLED", lines: "FAINT" });
+  });
+
+  it("DEEP: lines stay ACTIVE through the stress-test and reassessment", () => {
+    const events: CouncilEvent[] = [
+      convened(FOUR, "DEEP"),
+      ...FOUR.map(done),
+      { type: "stage", stage: "devils_advocate" },
+      { type: "stage", stage: "reassessing" },
+    ];
+    expect(chamberState(events, "DEEP").node).toBe("PROMINENT");
+    expect(chamberState(events, "DEEP").lines).toBe("ACTIVE");
   });
 });
