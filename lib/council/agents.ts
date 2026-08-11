@@ -313,16 +313,44 @@ Your JSON must have exactly these fields — the "verdict" value must be one of 
 }`,
 };
 
-/** Human descriptions for every verdict category (both sets). */
+/** Human descriptions for every verdict category (all per-type sets, V0.3). */
 export const VERDICT_CATEGORY_DESCRIPTIONS: Record<VerdictCategory, string> = {
+  // Product / proposal set
   BUILD: "BUILD — the evidence strongly supports proceeding.",
   BUILD_MVP: "BUILD_MVP — the problem is worth validating; proceed with a small, cheap test of the core idea.",
   PIVOT: "PIVOT — the current approach is weak; a different direction is more defensible.",
   DO_NOT_BUILD: "DO_NOT_BUILD — the proposal is fundamentally weak under the available information.",
+  // General set
+  AGREE: "AGREE — the claim or position is well supported by the available reasoning.",
   REFINE: "REFINE — the idea or problem is promising, but changes are necessary.",
   VALIDATE: "VALIDATE — the idea may be good, but important assumptions need real-world evidence.",
   RECONSIDER: "RECONSIDER — significant weaknesses exist; the approach should probably change.",
-  REJECT: "REJECT — the proposal is fundamentally weak under the available information.",
+  REJECT: "REJECT — the claim or position is fundamentally weak under the available information.",
+  // Mathematical set
+  CORRECT: "CORRECT — the mathematical reasoning and result are correct.",
+  INCORRECT: "INCORRECT — the mathematical reasoning contains an error.",
+  PARTIALLY_CORRECT: "PARTIALLY_CORRECT — the direction is right but the reasoning or result has flaws.",
+  UNVERIFIABLE: "UNVERIFIABLE — the mathematics cannot be verified from the information available.",
+  // Explanation / educational set
+  CONFIRMED: "CONFIRMED — the explanation/claim is supported by the available evidence.",
+  REFUTED: "REFUTED — the claim is contradicted by the available evidence.",
+  PARTIALLY_SUPPORTED: "PARTIALLY_SUPPORTED — parts of the claim hold; others are uncertain or wrong.",
+  UNRESOLVED: "UNRESOLVED — the evidence does not settle the claim.",
+  // Argumentative set
+  SUPPORTED: "SUPPORTED — the argument is logically strong and well supported.",
+  UNSUPPORTED: "UNSUPPORTED — the argument does not survive scrutiny.",
+  MIXED: "MIXED — the argument has real strengths and serious weaknesses.",
+  UNDETERMINED: "UNDETERMINED — there is not enough to judge the argument fairly.",
+  // Technical set
+  SOUND: "SOUND — the technical approach/code is correct and defensible.",
+  FLAWED: "FLAWED — the technical approach contains a substantive defect.",
+  RISKY: "RISKY — it may work but carries significant technical risk.",
+  UNVERIFIED: "UNVERIFIED — correctness cannot be established from the information available.",
+  // Troubleshooting set
+  FIXED: "FIXED — the cause is identified and the problem is resolved.",
+  DIRECTION_FOUND: "DIRECTION_FOUND — a plausible cause and next step were identified.",
+  PARTIAL: "PARTIAL — some causes ruled out, but the problem is not fully resolved.",
+  STILL_UNRESOLVED: "STILL_UNRESOLVED — the problem remains unexplained.",
   INSUFFICIENT_INFORMATION:
     "INSUFFICIENT_INFORMATION — reserved by the system: returned only when even a provisional verdict would be irresponsible. The model is never offered this category; the orchestrator routes any attempt to the deterministic synthesizer.",
 };

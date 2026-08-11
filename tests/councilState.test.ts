@@ -85,7 +85,7 @@ function usageFor(): CouncilUsage {
     success: true,
     questionLength: 10,
     startedAt: "now",
-    stageDurations: { analysisMs: 1, comparisonMs: 1, devilsAdvocateMs: 0, reassessmentMs: 0, judgeMs: 1 },
+    stageDurations: { analysisMs: 1, comparisonMs: 1, devilsAdvocateMs: 0, reassessmentMs: 0, judgeMs: 1, understandingMs: 0, directAnswerMs: 0 },
     agentDurations: { reasoner: 1 },
   };
 }

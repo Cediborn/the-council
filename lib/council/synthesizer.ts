@@ -1,5 +1,5 @@
 import {
-  isProductType,
+  PRODUCT_TYPES,
   type AgentAnalysis,
   type CouncilComparison,
   type CouncilVerdict,
@@ -52,8 +52,15 @@ function dedupe(items: string[]): string[] {
   return out;
 }
 
-function mapToSet(generic: GenericCategory, product: boolean): VerdictCategory {
-  if (product) {
+/**
+ * V0.3 — map the internal risk ladder onto the question type's verdict set.
+ * A broken Judge never reaches the strongest category of any set (provisional
+ * results cap at the second-strongest — e.g. BUILD_MVP, not BUILD; CONFIRMED
+ * is never issued by the synthesizer; a maths answer is PARTIALLY_CORRECT,
+ * never CORRECT).
+ */
+function mapToSet(generic: GenericCategory, type: QuestionType): VerdictCategory {
+  if (PRODUCT_TYPES.includes(type)) {
     switch (generic) {
       case "REJECT":
         return "DO_NOT_BUILD";
@@ -63,45 +70,47 @@ function mapToSet(generic: GenericCategory, product: boolean): VerdictCategory {
         return "BUILD_MVP";
     }
   }
+  switch (type) {
+    case "mathematical":
+      return generic === "REJECT" ? "INCORRECT" : generic === "RECONSIDER" ? "PARTIALLY_CORRECT" : "UNVERIFIABLE";
+    case "explanation":
+    case "educational":
+      return generic === "REJECT" ? "REFUTED" : generic === "RECONSIDER" ? "PARTIALLY_SUPPORTED" : "UNRESOLVED";
+    case "argumentative":
+      return generic === "REJECT" ? "UNSUPPORTED" : generic === "RECONSIDER" ? "MIXED" : "UNDETERMINED";
+    case "technical":
+      return generic === "REJECT" ? "FLAWED" : generic === "RECONSIDER" ? "RISKY" : "UNVERIFIED";
+    case "troubleshooting":
+      return generic === "REJECT" ? "STILL_UNRESOLVED" : generic === "RECONSIDER" ? "PARTIAL" : "DIRECTION_FOUND";
+    default:
+      // general
+      return generic === "REJECT" ? "REJECT" : generic === "RECONSIDER" ? "RECONSIDER" : "VALIDATE";
+  }
+}
+
+function directionSentence(generic: GenericCategory): string {
   switch (generic) {
     case "REJECT":
-      return "REJECT";
-    case "RECONSIDER":
-      return "RECONSIDER";
-    default:
-      return "VALIDATE";
-  }
-}
-
-function directionSentence(verdict: VerdictCategory): string {
-  switch (verdict) {
-    case "DO_NOT_BUILD":
-    case "REJECT":
-      return "The available reasoning points against proceeding.";
-    case "PIVOT":
+      return "The available reasoning points against the position.";
     case "RECONSIDER":
       return "The available reasoning is mixed — the current approach looks weak relative to the alternatives.";
-    case "BUILD_MVP":
     case "VALIDATE":
-      return "The available reasoning supports testing the idea further, but key information is still missing.";
+      return "The available reasoning supports checking the idea further, but key information is still missing.";
     default:
-      return "Not enough information exists to responsibly reach even a provisional conclusion.";
+      return "The available reasoning supports cautious movement, but key information is still missing.";
   }
 }
 
-function actionFor(verdict: VerdictCategory): string {
-  switch (verdict) {
-    case "DO_NOT_BUILD":
+function actionFor(generic: GenericCategory): string {
+  switch (generic) {
     case "REJECT":
       return "Do not proceed with the current proposal under the available information.";
-    case "PIVOT":
     case "RECONSIDER":
       return "Reconsider the current approach before committing further resources.";
-    case "BUILD_MVP":
     case "VALIDATE":
       return "Validate the key assumptions with real-world evidence before committing further.";
     default:
-      return "Retry the Council, or gather more information before asking again.";
+      return "Proceed cautiously: test the core assumption cheaply before committing further.";
   }
 }
 
@@ -160,8 +169,7 @@ export function synthesizeProvisionalVerdict(input: SynthesisInput): CouncilVerd
     generic = "BUILD_MVP";
   }
 
-  const product = isProductType(questionType);
-  const verdict = mapToSet(generic, product);
+  const verdict = mapToSet(generic, questionType);
 
   const keyReasons = dedupe(
     completed.flatMap((a) => a.keyPoints.slice(0, 2)).slice(0, 5),
@@ -185,14 +193,14 @@ export function synthesizeProvisionalVerdict(input: SynthesisInput): CouncilVerd
     score: SCORE_BY_GENERIC[generic],
     confidence,
     informationSufficiency: unknowns.length >= 3 ? "LOW" : "MEDIUM",
-    summary: `The Council's independent analyses were completed (${completed.length} of ${analyses.length}), but the final Judge could not safely produce a verdict. This result is PROVISIONAL — synthesized from the surviving analyses. ${directionSentence(verdict)}`,
+    summary: `The Council's independent analyses were completed (${completed.length} of ${analyses.length}), but the final Judge could not safely produce a verdict. This result is PROVISIONAL — synthesized from the surviving analyses. ${directionSentence(generic)}`,
     keyReasons,
     agreements: comparison?.agreements.map((a) => a.summary).slice(0, 5) ?? [],
     disagreements: comparison?.disagreements.map((d) => d.summary).slice(0, 5) ?? [],
     criticalUnknowns: unknowns.slice(0, 6),
     assumptions: dedupe(completed.flatMap((a) => a.assumptions)).slice(0, 6),
     risks: dedupe(completed.flatMap((a) => a.risks)).slice(0, 6),
-    recommendedAction: actionFor(verdict),
+    recommendedAction: actionFor(generic),
     whatWouldChangeVerdict: [
       ...unknowns.slice(0, 4),
       "A working Judge evaluation of the surviving analyses.",

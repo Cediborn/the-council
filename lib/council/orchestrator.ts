@@ -25,6 +25,7 @@ import {
   verdictsForType,
   type AgentAnalysis,
   type AgentKey,
+  type ClarificationQuestion,
   type CouncilCallTelemetry,
   type CouncilComparison,
   type CouncilEvent,
@@ -35,6 +36,9 @@ import {
   type QuestionClassification,
   type ReassessmentAnalysis,
 } from "./types";
+import { detectAmbiguity } from "./understand";
+import { buildUnderstandingContext, runUnderstander } from "./understander";
+import { computeVerdictDiff } from "./followup";
 
 /**
  * COUNCIL V0.2 orchestrator.
@@ -163,6 +167,24 @@ export interface CouncilRunResume {
   retryAgent: AgentKey;
 }
 
+/**
+ * V0.3 — targeted re-analysis of an existing deliberation (Part 8.3).
+ * Sent by /api/council/followup when the follow-up intent is a correction or
+ * new information. Only the affected agents re-run (concurrently); the other
+ * completed analyses are reused; Devil's Advocate / Reassessment never run
+ * on a follow-up (user decision #8 — auto-degraded lighter pipeline).
+ */
+export interface CouncilReconsiderOptions {
+  /** Every analysis from the prior run, including failed ones. */
+  priorAnalyses: AgentAnalysis[];
+  /** The prior verdict this reply responds to. */
+  priorVerdict: CouncilVerdict;
+  /** The members whose lens the new information touches. */
+  affectedAgents: AgentKey[];
+  /** Accumulated corrections / new information across the conversation. */
+  mergedContext: string[];
+}
+
 export interface CouncilRunOptions {
   mode: CouncilMode;
   question: string;
@@ -172,6 +194,10 @@ export interface CouncilRunOptions {
   sessionId?: string;
   /** V0.2.2.2: resume a previous session by re-running one failed member. */
   resume?: CouncilRunResume;
+  /** V0.3: answers to the clarify round, merged into the question context. */
+  clarifications?: { id: string; answer: string }[];
+  /** V0.3: targeted re-analysis after a follow-up reply. */
+  reconsider?: CouncilReconsiderOptions;
 }
 
 export class CouncilRunError extends Error {
@@ -231,6 +257,9 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
       devilsAdvocateMs: 0,
       reassessmentMs: 0,
       judgeMs: 0,
+      // V0.3: optional understander + direct-answer calls.
+      understandingMs: 0,
+      directAnswerMs: 0,
     },
     agentDurations: {},
     // V0.2.2.4 (Part 9): per-call telemetry — see CouncilCallTelemetry.
@@ -258,12 +287,27 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
     try {
       // V0.2.2.2 (Part 5): a resumed session keeps the EXACT agent set of the
       // original run and only re-runs the failed member(s).
+      // V0.3: a reconsidered run re-runs ONLY the affected members.
       const resumed = opts.resume;
+      const reconsider = opts.reconsider;
       const analyticalAgents: AgentKey[] = resumed
         ? resumed.agents
-        : mode === "QUICK"
-          ? selectQuickAgents(question)
-          : ANALYTICAL_AGENTS;
+        : reconsider
+          ? reconsider.affectedAgents
+          : mode === "QUICK"
+            ? selectQuickAgents(question)
+            : ANALYTICAL_AGENTS;
+
+      // V0.3: the effective question includes clarification answers and
+      // accumulated context, so the agents reason about the FULL intent.
+      const merged = [...(reconsider?.mergedContext ?? [])];
+      const clarificationBlock =
+        opts.clarifications && opts.clarifications.length > 0
+          ? `\n\nAdditional context you provided:\n${opts.clarifications
+              .map((c) => `- ${c.answer}`)
+              .join("\n")}`
+          : "";
+      const promptQuestion = `${question}${clarificationBlock}${merged.length ? `\n\nAccumulated context from this conversation: ${merged.join("; ")}` : ""}`;
 
       queue.push({
         type: "convened",
@@ -274,24 +318,54 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
         stage: "convened",
       });
 
+      // ── Stage 0 (optional): the LLM understander (V0.3 Part 6.3) ──────────
+      // Only runs when the deterministic gate flags ambiguity, or when a cloud
+      // provider is in use (fast enough that the enrichment is free). On the
+      // local CPU model it stays off for the vast majority of questions.
+      let understandingContext = "";
+      if (!resumed && !reconsider && (detectAmbiguity(question) || providerFor("understanding").id !== "ollama")) {
+        queue.push({ type: "stage", stage: "understanding" });
+        const uStart = Date.now();
+        const u = await runUnderstander({
+          question,
+          type: classification.type,
+          provider: providerFor("understanding"),
+          signal,
+          usage,
+        });
+        usage.stageDurations.understandingMs += Date.now() - uStart;
+        if (u.ok) understandingContext = buildUnderstandingContext(u.data);
+      }
+
       // ── Stage 1: independent parallel analysis ────────────────────────────
       // Resolve each stage's provider once (per-stage routing, Part 21) so the
-      // four concurrent analysts share one instance and usage stays accurate.
+      // concurrent analysts share one instance and usage stays accurate.
       const analysisProvider = providerFor("analysis");
       const analyses = new Map<AgentKey, AgentAnalysis>();
       if (resumed) {
         for (const a of resumed.analyses) analyses.set(a.agent, a);
       }
+      if (reconsider) {
+        for (const a of reconsider.priorAnalyses) analyses.set(a.agent, a);
+      }
       // Normal runs analyse every member concurrently. Resumed runs analyse
-      // ONLY the member being retried.
+      // ONLY the member being retried. Reconsidered runs analyse ONLY the
+      // affected members (the rest are reused).
       const analystsToRun = resumed
         ? analyticalAgents.filter((a) => a === resumed.retryAgent)
-        : analyticalAgents;
+        : reconsider
+          ? reconsider.affectedAgents
+          : analyticalAgents;
       // Per-agent emphasis (V0.2.1 Part 5): each analyst is told which of its
       // OWN capabilities this question needs — contextual FULL/DEEP without
       // removing independence (Part 22).
+      // V0.3: the understanding context + previous verdict are visible to the
+      // re-analysing agents so they respond to the new information directly.
+      const reconsiderNote = reconsider
+        ? `\n\nYou are RE-ANALYSING in light of new information from the user. The previous verdict was ${reconsider.priorVerdict.verdict} (score ${reconsider.priorVerdict.score}/10). Do not defend it for consistency's sake; update your analysis where the new information warrants it.`
+        : "";
       const userPrompt = (agent: AgentKey) =>
-        `Question: ${question}${buildAgentContext(agent, classification)}`;
+        `Question: ${promptQuestion}${understandingContext}${reconsiderNote}${buildAgentContext(agent, classification)}`;
 
       const runAnalyst = async (agent: AgentKey): Promise<void> => {
         const def = AGENTS[agent];
@@ -366,19 +440,33 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
       // All analysts run concurrently; events arrive as each one finishes.
       await timed("analysisMs", () => Promise.all(analystsToRun.map((agent) => runAnalyst(agent))));
 
-      const completedAnalyses = analyticalAgents
+      const freshAnalyses = analyticalAgents
         .map((agent) => analyses.get(agent))
         .filter((a): a is AgentAnalysis => Boolean(a));
+      const freshSuccessful = freshAnalyses.filter((a) => !a.failed);
+      // V0.3: for a reconsidered run the Judge sees the fresh analyses PLUS the
+      // reused prior ones; comparison compares only the fresh responses.
+      // CRITICAL: the affected agents' OLD analyses must NOT be reused — they
+      // were just re-run, so including them would feed the Judge two versions
+      // of the same member (the headline bug the reviewer caught).
+      const priorSuccessful = reconsider
+        ? reconsider.priorAnalyses.filter(
+            (a) => !a.failed && !reconsider.affectedAgents.includes(a.agent),
+          )
+        : [];
+      const successfulAnalyses = [...priorSuccessful, ...freshSuccessful];
 
-      // If EVERY analytical agent failed, the Council has nothing to judge.
-      const successfulAnalyses = completedAnalyses.filter((a) => !a.failed);
-      if (successfulAnalyses.length === 0) {
+      // If every NEW analytical result failed, the Council has nothing new to
+      // judge (V0.3: the prior thread is preserved on the client).
+      if (freshSuccessful.length === 0) {
         usage.durationMs = Date.now() - startedAt;
         usage.success = false;
         recordUsage(usage);
         throw new CouncilRunError(
-          "Every analytical agent failed. The model provider may be unreachable.",
-          completedAnalyses,
+          reconsider
+            ? "The re-analysis failed. The previous verdict and analyses remain available."
+            : "Every analytical agent failed. The model provider may be unreachable.",
+          [...priorSuccessful, ...freshAnalyses],
           null,
           null,
         );
@@ -390,19 +478,26 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
         reassessment: ReassessmentAnalysis | null,
       ) => {
         if (signal?.aborted) {
-          throw new CouncilRunError("Council cancelled.", completedAnalyses, da, reassessment);
+          throw new CouncilRunError(
+            "Council cancelled.",
+            [...priorSuccessful, ...freshAnalyses],
+            da,
+            reassessment,
+          );
         }
       };
       bailIfAborted(null, null);
 
-      // ── Stage 2: comparison (FULL + DEEP only) ────────────────────────────
+      // ── Stage 2: comparison (FULL + DEEP; reconsider only with ≥2 fresh) ──
       let comparison: CouncilComparison | null = null;
-      if (mode !== "QUICK") {
+      const comparisonInput = reconsider ? freshSuccessful : successfulAnalyses;
+      const doComparison = reconsider ? freshSuccessful.length >= 2 : mode !== "QUICK";
+      if (doComparison) {
         const comparisonProvider = providerFor("comparison");
         queue.push({ type: "stage", stage: "comparing" });
         comparison = await timed("comparisonMs", () =>
           runComparison(
-            completedAnalyses,
+            comparisonInput,
             question,
             classification,
             comparisonProvider,
@@ -414,14 +509,14 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
         bailIfAborted(null, null);
       }
 
-      // ── Stage 3: Devil's Advocate (DEEP only) ─────────────────────────────
+      // ── Stage 3: Devil's Advocate (DEEP only — never on a follow-up) ─────
       let devilsAdvocate: DevilAdvocateAnalysis | null = null;
-      if (mode === "DEEP") {
+      if (mode === "DEEP" && !reconsider) {
         const daProvider = providerFor("devils_advocate");
         queue.push({ type: "stage", stage: "devils_advocate" });
         devilsAdvocate = await timed("devilsAdvocateMs", () =>
           runDevilsAdvocate(
-            completedAnalyses,
+            successfulAnalyses,
             comparison,
             question,
             classification,
@@ -434,14 +529,14 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
         bailIfAborted(devilsAdvocate, null);
       }
 
-      // ── Stage 4: Reassessment (DEEP only) — V0.2 (Part 12) ───────────────
+      // ── Stage 4: Reassessment (DEEP only, not on a follow-up) ─────────────
       let reassessment: ReassessmentAnalysis | null = null;
-      if (mode === "DEEP" && devilsAdvocate && !devilsAdvocate.failed) {
+      if (mode === "DEEP" && !reconsider && devilsAdvocate && !devilsAdvocate.failed) {
         const reassessmentProvider = providerFor("reassessment");
         queue.push({ type: "stage", stage: "reassessing" });
         reassessment = await timed("reassessmentMs", () =>
           runReassessment(
-            completedAnalyses,
+            successfulAnalyses,
             comparison,
             devilsAdvocate,
             question,
@@ -460,15 +555,16 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
       queue.push({ type: "stage", stage: "judging" });
       const verdict = await timed("judgeMs", () =>
         runJudge(
-          completedAnalyses,
+          successfulAnalyses,
           comparison,
           devilsAdvocate,
           reassessment,
-          question,
+          promptQuestion,
           classification,
           judgeProvider,
           signal,
           usage,
+          reconsider ? { priorVerdict: reconsider.priorVerdict } : undefined,
         ),
       );
 
@@ -476,7 +572,12 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
       usage.success = true;
       recordUsage(usage);
 
-      queue.push({ type: "verdict", verdict, usage, stage: "complete" });
+      // V0.3: revisions carry the deterministic diff vs the previous verdict.
+      const diff =
+        reconsider && reconsider.priorVerdict
+          ? computeVerdictDiff(reconsider.priorVerdict, verdict)
+          : undefined;
+      queue.push({ type: "verdict", verdict, usage, stage: "complete", diff });
     } catch (err) {
       pipelineError = err;
     } finally {
@@ -924,6 +1025,18 @@ async function runReassessment(
   }
 }
 
+/** V0.3: compact prior-verdict summary handed to the re-deliberating Judge. */
+function formatVerdictForReconsider(v: CouncilVerdict): string {
+  return [
+    `Verdict: ${v.verdict} (score ${v.score}/10, confidence ${v.confidence}%)`,
+    `Summary: ${v.summary}`,
+    v.keyReasons.length ? `Key reasons: ${v.keyReasons.join("; ")}` : "",
+    v.strongestArgumentAgainst ? `Strongest counterargument: ${v.strongestArgumentAgainst}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function formatDevilsAdvocateForJudge(da: DevilAdvocateAnalysis): string {
   if (da.failed) return "Devil's Advocate FAILED (no response).";
   return [
@@ -947,6 +1060,7 @@ async function runJudge(
   provider: ModelProvider,
   signal: AbortSignal | undefined,
   usage: CouncilUsage,
+  reconsider?: { priorVerdict: CouncilVerdict },
 ): Promise<CouncilVerdict> {
   const def = AGENTS.judge;
   const failedCount = analyses.filter((a) => a.failed).length;
@@ -960,6 +1074,13 @@ async function runJudge(
       ? `\nNOTE: ${failedCount} of ${analyses.length} analytical agent(s) FAILED and provided no analysis. Factor this into your confidence — you have less evidence than a full Council. Do not fabricate what the failed agents would have said.`
       : "";
 
+  // V0.3 (Part 11): on a follow-up the Judge is explicitly re-deliberating.
+  // It may uphold, revise, or overturn the previous verdict — never defend it
+  // for consistency's sake, never overturn it for novelty's sake.
+  const reconsiderNote = reconsider
+    ? `\n\nPREVIOUS VERDICT (you are re-deliberating after new user information):\n${formatVerdictForReconsider(reconsider.priorVerdict)}\n\nYou may uphold, revise, or overturn it. Never defend the previous verdict for consistency's sake; never overturn it for novelty's sake. If you change it, say why in "whyThisVerdictWon".`
+    : "";
+
   try {
     // V0.2.2.2: the Judge system prompt + output contract are generated for the
     // question's TYPE so only the allowed verdict categories are on the table
@@ -967,7 +1088,7 @@ async function runJudge(
     const result = await callWithRetry(
       {
         system: `${judgeSystemFor(classification.type)}\n\n${judgeOutputContract(classification.type)}`,
-        user: `Question: ${question}${buildClassificationContext(classification)}\n\nIndependent analyses:\n${formatAnalysesForStage(analyses, comparison)}\n\nComparison:\n${formatComparison(comparison)}${daSection}${reassessmentSection}${failedNote}`,
+        user: `Question: ${question}${buildClassificationContext(classification)}\n\nIndependent analyses:\n${formatAnalysesForStage(analyses, comparison)}\n\nComparison:\n${formatComparison(comparison)}${daSection}${reassessmentSection}${reconsiderNote}${failedNote}`,
         temperature: 0.3,
         maxTokens: MAX_VERDICT_TOKENS,
       },

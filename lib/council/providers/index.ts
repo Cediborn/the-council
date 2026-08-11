@@ -70,7 +70,9 @@ export type ProviderStage =
   | "comparison"
   | "devils_advocate"
   | "reassessment"
-  | "judge";
+  | "judge"
+  | "understanding"
+  | "direct_answer";
 
 /**
  * Per-stage model routing (Part 21): a stage can be pinned to a different
@@ -84,6 +86,8 @@ const STAGE_MODEL_ENV: Record<ProviderStage, string> = {
   devils_advocate: "COUNCIL_MODEL_DEVILS_ADVOCATE",
   reassessment: "COUNCIL_MODEL_REASSESSMENT",
   judge: "COUNCIL_MODEL_JUDGE",
+  understanding: "COUNCIL_MODEL_UNDERSTANDING",
+  direct_answer: "COUNCIL_MODEL_DIRECT",
 };
 
 export function resolveProviderForStage(stage: ProviderStage): ModelProvider {

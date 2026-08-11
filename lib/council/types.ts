@@ -72,14 +72,43 @@ export type AgentKey =
   | "judge";
 
 export type VerdictCategory =
+  // Product / proposal set (business, decision, planning, comparison, creative)
   | "BUILD"
   | "BUILD_MVP"
   | "PIVOT"
   | "DO_NOT_BUILD"
+  // General set (general)
+  | "AGREE"
   | "REFINE"
   | "VALIDATE"
   | "RECONSIDER"
   | "REJECT"
+  // Mathematical set
+  | "CORRECT"
+  | "INCORRECT"
+  | "PARTIALLY_CORRECT"
+  | "UNVERIFIABLE"
+  // Explanation / educational set
+  | "CONFIRMED"
+  | "REFUTED"
+  | "PARTIALLY_SUPPORTED"
+  | "UNRESOLVED"
+  // Argumentative set
+  | "SUPPORTED"
+  | "UNSUPPORTED"
+  | "MIXED"
+  | "UNDETERMINED"
+  // Technical set
+  | "SOUND"
+  | "FLAWED"
+  | "RISKY"
+  | "UNVERIFIED"
+  // Troubleshooting set
+  | "FIXED"
+  | "DIRECTION_FOUND"
+  | "PARTIAL"
+  | "STILL_UNRESOLVED"
+  // System-reserved
   | "INSUFFICIENT_INFORMATION";
 
 export type Stance = "SUPPORT" | "OPPOSE" | "CONDITIONAL" | "NEUTRAL" | "INSUFFICIENT";
@@ -236,6 +265,10 @@ export interface CouncilUsage {
     devilsAdvocateMs: number;
     reassessmentMs: number;
     judgeMs: number;
+    /** V0.3: LLM understander call (only when the heuristic gate flags it). */
+    understandingMs: number;
+    /** V0.3: direct-answer call for explanation follow-ups. */
+    directAnswerMs: number;
   };
   /** V0.2.2.2: per-analyst wall-clock durations (ms), keyed by agent key. */
   agentDurations: Record<string, number>;
@@ -253,7 +286,7 @@ export interface CouncilUsage {
  * performance audit is exact rather than inferred (Part 9).
  */
 export interface CouncilCallTelemetry {
-  stage: "analysis" | "comparison" | "devils_advocate" | "reassessment" | "judge";
+  stage: "analysis" | "comparison" | "devils_advocate" | "reassessment" | "judge" | "understanding" | "direct_answer";
   /** Agent key (or stage name for pipeline stages). */
   agent: string;
   model: string;
@@ -262,6 +295,90 @@ export interface CouncilCallTelemetry {
   durationMs: number;
   inputTokens: number;
   outputTokens: number;
+}
+
+// ── V0.3 conversational interaction ──────────────────────────────────────────
+
+/** How the Council should treat a reply that follows a verdict (V0.3 Part 8). */
+export type FollowUpIntent =
+  | "SMALL_TALK" // quick chat reply, no Council
+  | "EXPLANATION_REQUEST" // direct answer, no Council
+  | "CORRECTION" // re-deliberate (targeted re-analysis)
+  | "NEW_INFORMATION" // re-deliberate (targeted re-analysis)
+  | "CHALLENGE" // explicit challenge — wired, delivered in a later version
+  | "NEW_QUESTION"; // fresh thread
+
+/** A single clarification question asked before convening (V0.3 Part 7). */
+export interface ClarificationQuestion {
+  id: string;
+  question: string;
+  /** Why this question matters — shown so the user is not interrogated blindly. */
+  why: string;
+}
+
+/**
+ * V0.3 (Part 3 / §5): what changed between two verdicts in one conversation.
+ * Computed deterministically by the server and attached to revision verdicts.
+ */
+export interface VerdictDiff {
+  changed: boolean;
+  /** The verdict category itself changed. */
+  verdictChanged: boolean;
+  /** new score − old score (0 when no previous verdict). */
+  scoreDelta: number;
+  /** new confidence − old confidence. */
+  confidenceDelta: number;
+  /** Key reasons present in the new verdict but not the old. */
+  reasonsAdded: string[];
+  /** Key reasons present in the old verdict but not the new. */
+  reasonsRemoved: string[];
+  /** One short sentence summarising what changed. */
+  summaryNote: string;
+}
+
+/**
+ * V0.3 — a conversation thread: the accumulated turns around one original
+ * question. Owned by the client; the server only ever receives the minimal
+ * pieces it needs (stateless, serverless-safe).
+ */
+export interface ConversationThread {
+  id: string;
+  mode: CouncilMode;
+  question: string;
+  startedAt: number;
+  /** Accumulated user corrections / new information across turns. */
+  mergedContext: string[];
+  /** Explicit assumptions the Council is working under. */
+  explicitAssumptions: string[];
+  turns: ConversationTurn[];
+}
+
+export interface ConversationTurn {
+  id: string;
+  kind: "user" | "assistant";
+  type:
+    | "question"
+    | "clarification" // Council asked; user answered
+    | "verdict" // a verdict card (with diff vs previous)
+    | "revision" // re-deliberated verdict
+    | "direct_reply" // explanation answer
+    | "chat_reply" // small-talk reply
+    | "challenge_note"; // challenge intent, honest future note
+  /** User text or assistant reply text (for non-verdict turns). */
+  text?: string;
+  verdict?: CouncilVerdict;
+  usage?: CouncilUsage;
+  diff?: VerdictDiff;
+  intent?: FollowUpIntent;
+  /** The clarification questions asked (and the user's answers, keyed by id). */
+  clarifications?: ClarificationQuestion[];
+  answers?: { id: string; answer: string }[];
+  /**
+   * In-memory SSE events of a verdict turn (client only). Stripped from
+   * persistence — restored turns render summarized.
+   */
+  events?: CouncilEvent[];
+  startedAt: number;
 }
 
 /** Raw request body for POST /api/council. */
@@ -306,6 +423,7 @@ export interface ModelProvider {
 /** Stage names surfaced to the UI as the deliberation progresses. */
 export type CouncilStage =
   | "convened"
+  | "understanding"
   | "analyzing"
   | "comparing"
   | "devils_advocate"
@@ -326,11 +444,20 @@ export type CouncilEvent =
     }
   | { type: "agent:start"; agent: AgentKey; name: string; stage: "analyzing" }
   | { type: "agent:done"; analysis: AgentAnalysis; stage: "analyzing" }
-  | { type: "stage"; stage: "comparing" | "devils_advocate" | "reassessing" | "judging" }
+  | { type: "stage"; stage: "understanding" | "comparing" | "devils_advocate" | "reassessing" | "judging" }
   | { type: "comparison"; comparison: CouncilComparison; stage: "comparing" }
   | { type: "da:done"; analysis: DevilAdvocateAnalysis; stage: "devils_advocate" }
   | { type: "reassessment:done"; analysis: ReassessmentAnalysis; stage: "reassessing" }
-  | { type: "verdict"; verdict: CouncilVerdict; usage: CouncilUsage; stage: "complete" }
+  | { type: "verdict"; verdict: CouncilVerdict; usage: CouncilUsage; stage: "complete"; diff?: VerdictDiff }
+  | { type: "followup:intent"; intent: FollowUpIntent; stage: "complete" }
+  | {
+      type: "direct:reply";
+      reply: string;
+      intent: FollowUpIntent;
+      /** True when the client should start a fresh thread with `reply` as the new question. */
+      newQuestion?: boolean;
+      stage: "complete";
+    }
   | {
       type: "error";
       message: string;
@@ -340,13 +467,17 @@ export type CouncilEvent =
     };
 
 /**
- * Verdicts offered for product/business-flavoured questions (V0.2.2.2).
+ * V0.3 — per-question-type verdict sets (user decision #7).
  *
- * V0.2.2.3: INSUFFICIENT_INFORMATION is deliberately NOT in either model-facing
- * set. The Judge must always produce a decision and report its uncertainty via
- * informationSufficiency + criticalUnknowns; the no-verdict state is reserved
- * exclusively for the deterministic synthesizer's genuinely-impossible case
- * (zero completed analyses) so it can never be picked as an easy escape hatch.
+ * The product set is for proposal/decision flavoured questions; every other
+ * question type now has a natural set of its own (a maths question is not
+ * "BUILD"-judged; an argument is not "PIVOT"-judged).
+ *
+ * V0.2.2.3 rule carried forward: INSUFFICIENT_INFORMATION is deliberately NOT
+ * in ANY model-facing set. The Judge must always produce a decision and
+ * report its uncertainty via informationSufficiency + criticalUnknowns; the
+ * no-verdict state is reserved exclusively for the deterministic
+ * synthesizer's genuinely-impossible case (zero completed analyses).
  */
 export const PRODUCT_VERDICTS: VerdictCategory[] = [
   "BUILD",
@@ -355,50 +486,106 @@ export const PRODUCT_VERDICTS: VerdictCategory[] = [
   "DO_NOT_BUILD",
 ];
 
-/** Verdicts offered for general questions (explanations, maths, arguments, …). */
+/** Verdicts offered for general questions. AGREE replaces BUILD (V0.3). */
 export const GENERAL_VERDICTS: VerdictCategory[] = [
-  "BUILD",
+  "AGREE",
   "REFINE",
   "VALIDATE",
   "RECONSIDER",
   "REJECT",
 ];
 
-/** Every category across both sets — used by the shared verdict schema. */
+/** Verdicts for mathematical questions (V0.3). */
+export const MATHEMATICAL_VERDICTS: VerdictCategory[] = [
+  "CORRECT",
+  "INCORRECT",
+  "PARTIALLY_CORRECT",
+  "UNVERIFIABLE",
+];
+
+/** Verdicts for explanation + educational questions (V0.3). */
+export const EXPLANATION_VERDICTS: VerdictCategory[] = [
+  "CONFIRMED",
+  "REFUTED",
+  "PARTIALLY_SUPPORTED",
+  "UNRESOLVED",
+];
+
+/** Verdicts for argumentative questions (V0.3). */
+export const ARGUMENTATIVE_VERDICTS: VerdictCategory[] = [
+  "SUPPORTED",
+  "UNSUPPORTED",
+  "MIXED",
+  "UNDETERMINED",
+];
+
+/** Verdicts for technical questions (V0.3). */
+export const TECHNICAL_VERDICTS: VerdictCategory[] = [
+  "SOUND",
+  "FLAWED",
+  "RISKY",
+  "UNVERIFIED",
+];
+
+/** Verdicts for troubleshooting questions (V0.3). */
+export const TROUBLESHOOTING_VERDICTS: VerdictCategory[] = [
+  "FIXED",
+  "DIRECTION_FOUND",
+  "PARTIAL",
+  "STILL_UNRESOLVED",
+];
+
+/** Every category across all sets — used by the shared verdict schema. */
 export const ALL_VERDICTS: VerdictCategory[] = [
-  "BUILD",
-  "BUILD_MVP",
-  "PIVOT",
-  "DO_NOT_BUILD",
-  "REFINE",
-  "VALIDATE",
-  "RECONSIDER",
-  "REJECT",
+  ...PRODUCT_VERDICTS,
+  ...GENERAL_VERDICTS,
+  ...MATHEMATICAL_VERDICTS,
+  ...EXPLANATION_VERDICTS,
+  ...ARGUMENTATIVE_VERDICTS,
+  ...TECHNICAL_VERDICTS,
+  ...TROUBLESHOOTING_VERDICTS,
   "INSUFFICIENT_INFORMATION",
 ];
 
-/** Question types judged with the product verdict set (V0.2.2.2 Part 13). */
+/** Question types judged with the product verdict set (proposal evaluation). */
 export const PRODUCT_TYPES: QuestionType[] = [
   "business",
   "decision",
   "planning",
   "comparison",
-  "troubleshooting",
   "creative",
 ];
 
 /**
- * V0.2.2.2: which verdict categories a question may receive, by its type.
- * Product-flavoured questions (idea/proposal evaluation) use the product set;
- * everything else keeps the general set.
+ * V0.3: which verdict categories a question may receive, by its type.
+ * Each type gets the set that matches the kind of judgment it asks for.
  *
- * V0.2.2.3: INSUFFICIENT_INFORMATION is NOT offered for ANY type — the Judge
- * cannot return it, the orchestrator's set-enforcement routes any attempt to
- * the deterministic synthesizer (which yields a provisional verdict from the
- * surviving analyses, or the honest no-verdict state when nothing survived).
+ * V0.2.2.3 rule carried forward: INSUFFICIENT_INFORMATION is NOT offered for
+ * ANY type — the orchestrator's set-enforcement routes any attempt to the
+ * deterministic synthesizer (a provisional verdict), never a dead end.
  */
 export function verdictsForType(type: QuestionType): VerdictCategory[] {
-  return PRODUCT_TYPES.includes(type) ? PRODUCT_VERDICTS : GENERAL_VERDICTS;
+  switch (type) {
+    case "business":
+    case "decision":
+    case "planning":
+    case "comparison":
+    case "creative":
+      return PRODUCT_VERDICTS;
+    case "mathematical":
+      return MATHEMATICAL_VERDICTS;
+    case "explanation":
+    case "educational":
+      return EXPLANATION_VERDICTS;
+    case "argumentative":
+      return ARGUMENTATIVE_VERDICTS;
+    case "technical":
+      return TECHNICAL_VERDICTS;
+    case "troubleshooting":
+      return TROUBLESHOOTING_VERDICTS;
+    case "general":
+      return GENERAL_VERDICTS;
+  }
 }
 
 export function isProductType(type: QuestionType): boolean {

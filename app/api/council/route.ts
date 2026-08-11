@@ -25,6 +25,7 @@ export async function POST(req: Request) {
     mode: "QUICK" | "FULL" | "DEEP";
     sessionId?: string;
     resume?: { agents: AgentKey[]; analyses: AgentAnalysis[]; retryAgent: AgentKey };
+    context?: { clarifications?: { id: string; answer: string }[]; assumptions?: string[] };
   };
   try {
     const body = await req.json().catch(() => ({}));
@@ -74,6 +75,8 @@ export async function POST(req: Request) {
                 retryAgent: parsed.resume.retryAgent,
               }
             : undefined,
+          // V0.3: answers to the clarify round become part of the question context.
+          clarifications: parsed.context?.clarifications,
         })) {
           send(event);
         }

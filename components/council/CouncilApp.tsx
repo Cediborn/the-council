@@ -11,17 +11,22 @@ import { VerdictView } from "./VerdictView";
 import { InsufficientPanel } from "./InsufficientPanel";
 import { ChallengeButton } from "./ChallengeButton";
 import { ExpandableAnalysis } from "./ExpandableAnalysis";
+import { ConversationThread } from "./ConversationThread";
+import { ClarificationCard } from "./ClarificationCard";
+import { FollowUpInput } from "./FollowUpInput";
 import { AlertIcon, GavelIcon, RotateIcon } from "@/components/icons";
 import type { StoredSession } from "@/lib/client/persistence";
 
 /**
- * COUNCIL V0.2.2.2 — app shell.
+ * COUNCIL V0.3 — app shell with the conversational layer.
  *
- * Explicit phase machine (Part 5): every phase resolves to success, failure,
- * or cancellation — a refresh is never required. V0.2.2.2 adds the DEGRADED
- * terminal phase (provisional verdict rendered through VerdictView with its
- * banner), per-member retry, and a persisted previous-deliberations list
- * (TEST 6 — results survive a refresh).
+ * V0.2.2.2 guarantees are unchanged (every phase resolves to success, failure,
+ * or cancellation — no refresh required). V0.3 adds:
+ *  - a clarify round before convening when the question misses critical info
+ *  - the conversation thread (past verdicts visible, compact)
+ *  - a follow-up input after each verdict: corrections/new info re-convene a
+ *    targeted re-analysis; explanations are answered directly
+ *  - revision diffs on re-deliberated verdicts
  */
 export function CouncilApp() {
   const council = useCouncil();
@@ -36,29 +41,79 @@ export function CouncilApp() {
   const retryMember = (agent: AgentKey) => council.retryAgent(agent);
   const preserved = completedAnalyses(council.events);
 
+  // A verdict exists in the thread or in the live council state → the user can
+  // continue the conversation.
+  const canFollowUp = council.thread.some(
+    (t) => (t.type === "verdict" || t.type === "revision") && t.verdict,
+  );
+  const inConversation = council.thread.length > 0;
+
   return (
     <MotionConfig reducedMotion="user">
       <div className="relative z-10 mx-auto flex min-h-dvh w-full max-w-4xl flex-col px-4 py-8 sm:px-6">
         <AnimatePresence mode="wait">
-          {council.phase === "idle" && (
+          {/* Clarify round — asked before convening when critical info is missing. */}
+          {council.clarify && council.phase === "idle" && (
             <motion.div
-              key="question"
+              key="clarify"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -12 }}
+              className="flex flex-1 flex-col justify-center"
+            >
+              <ClarificationCard
+                questions={council.clarify.questions}
+                assumptions={council.clarify.assumptions}
+                onAnswer={council.answerClarification}
+                onAbandon={council.abandonClarify}
+              />
+            </motion.div>
+          )}
+
+          {/* Idle — fresh question, or a settled conversation awaiting input. */}
+          {council.phase === "idle" && !council.clarify && (
+            <motion.div
+              key={inConversation ? "conversation" : "question"}
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -12 }}
               transition={{ duration: 0.3 }}
               className="flex flex-1 flex-col justify-center"
             >
-              <QuestionScreen onRun={council.run} />
-              <PreviousSessions
-                sessions={council.previousSessions}
-                onRestore={council.restoreSession}
-                onClear={council.clearHistory}
-              />
+              {inConversation ? (
+                <div className="flex flex-col gap-5">
+                  <ConversationThread turns={council.thread} />
+                  {canFollowUp && (
+                    <FollowUpInput
+                      disabled={running}
+                      onSubmit={council.sendFollowUp}
+                      placeholder="Continue the conversation — push back, add a detail, or ask a question…"
+                    />
+                  )}
+                  <div className="flex justify-center pt-2">
+                    <button
+                      onClick={council.startNewConversation}
+                      className="inline-flex items-center gap-2 rounded-xl border border-line bg-surface px-5 py-3 text-sm font-semibold text-ink transition-all hover:border-brand/50 hover:text-brand"
+                    >
+                      <RotateIcon className="h-4 w-4" />
+                      Ask a new question
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <QuestionScreen onRun={council.startQuestion} />
+                  <PreviousSessions
+                    sessions={council.previousSessions}
+                    onRestore={council.restoreSession}
+                    onClear={council.clearHistory}
+                  />
+                </>
+              )}
             </motion.div>
           )}
 
-          {council.phase === "analyzing" && council.events.length === 0 && (
+          {council.phase === "analyzing" && council.events.length === 0 && !council.clarify && (
             <motion.div
               key="starting"
               initial={{ opacity: 0 }}
@@ -66,6 +121,7 @@ export function CouncilApp() {
               exit={{ opacity: 0 }}
               className="flex flex-1 flex-col items-center justify-center gap-6"
             >
+              {inConversation && <ConversationThread turns={council.thread} />}
               <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-brand/30 bg-brand/5 text-brand animate-glow">
                 <AlertIcon className="h-6 w-6 animate-breathe" />
               </div>
@@ -89,6 +145,11 @@ export function CouncilApp() {
               exit={{ opacity: 0 }}
               className="flex flex-1 flex-col justify-center"
             >
+              {inConversation && (
+                <div className="mb-6">
+                  <ConversationThread turns={council.thread} />
+                </div>
+              )}
               <DeliberationPanel
                 question={council.question}
                 mode={council.mode ?? "QUICK"}
@@ -105,13 +166,18 @@ export function CouncilApp() {
               animate={{ opacity: 1, y: 0 }}
               className="flex flex-1 flex-col justify-center"
             >
+              {inConversation && (
+                <div className="mb-6">
+                  <ConversationThread turns={council.thread} />
+                </div>
+              )}
               <CancelledPanel
                 preserved={preserved}
                 onRetryAgent={retryMember}
                 onRetry={() => {
                   if (council.question && council.mode) council.run(council.question, council.mode);
                 }}
-                onReset={council.reset}
+                onReset={council.startNewConversation}
               />
             </motion.div>
           )}
@@ -123,6 +189,11 @@ export function CouncilApp() {
               animate={{ opacity: 1 }}
               className="flex flex-1 flex-col justify-center"
             >
+              {inConversation && (
+                <div className="mb-6">
+                  <ConversationThread turns={council.thread} />
+                </div>
+              )}
               <ErrorPanel
                 message={council.error ?? "Unknown error"}
                 preserved={preserved}
@@ -130,7 +201,7 @@ export function CouncilApp() {
                 onRetry={() => {
                   if (council.question && council.mode) council.run(council.question, council.mode);
                 }}
-                onReset={council.reset}
+                onReset={council.startNewConversation}
               />
             </motion.div>
           )}
@@ -152,7 +223,7 @@ export function CouncilApp() {
                   onRetry={() => {
                     if (council.question && council.mode) council.run(council.question, council.mode);
                   }}
-                  onReset={council.reset}
+                  onReset={council.startNewConversation}
                 />
               </motion.div>
             ) : (
@@ -163,15 +234,17 @@ export function CouncilApp() {
                 transition={{ duration: 0.4 }}
                 className="flex flex-col gap-6"
               >
+                {inConversation && <ConversationThread turns={council.thread} />}
                 <VerdictView
                   verdict={council.lastVerdict.verdict}
                   usage={council.lastVerdict.usage}
                   events={council.events}
                   onRetryAgent={retryMember}
+                  diff={council.lastVerdict.diff}
                 />
                 <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <button
-                    onClick={council.reset}
+                    onClick={council.startNewConversation}
                     className="inline-flex items-center justify-center gap-2 rounded-xl border border-line bg-surface px-5 py-3 text-sm font-semibold text-ink transition-all hover:border-brand/50 hover:text-brand"
                   >
                     Ask another question
@@ -181,6 +254,7 @@ export function CouncilApp() {
                     onToggle={() => setShowChallenge((v) => !v)}
                   />
                 </div>
+                <FollowUpInput disabled={running} onSubmit={council.sendFollowUp} />
               </motion.div>
             ))}
         </AnimatePresence>

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runCouncil } from "@/lib/council/orchestrator";
 import type { ModelProvider, ProviderChatInput, ProviderChatResult } from "@/lib/council/providers";
-import type { CouncilEvent } from "@/lib/council/types";
+import type { AgentAnalysis, CouncilEvent, CouncilVerdict } from "@/lib/council/types";
 
 function makeProvider(
   responses: (input: ProviderChatInput) => string,
@@ -116,7 +116,9 @@ describe("runCouncil — QUICK mode", () => {
       expect(verdict.verdict.score).toBe(8);
       expect(verdict.usage.mode).toBe("QUICK");
       expect(verdict.usage.success).toBe(true);
-      expect(verdict.usage.agentCalls).toBe(4);
+      // 3 analysts + understander (the injected mock provider is not Ollama,
+      // so the V0.3 understanding stage runs) + judge.
+      expect(verdict.usage.agentCalls).toBe(5);
     }
   });
 
@@ -158,7 +160,7 @@ describe("runCouncil — FULL mode", () => {
 
     const verdict = events.find((e) => e.type === "verdict");
     expect(verdict?.type).toBe("verdict");
-    if (verdict?.type === "verdict") expect(verdict.usage.agentCalls).toBe(6); // 4 + comparer + judge
+    if (verdict?.type === "verdict") expect(verdict.usage.agentCalls).toBe(7); // 4 + understander + comparer + judge
   });
 });
 
@@ -193,7 +195,7 @@ describe("runCouncil — DEEP mode", () => {
 
     const verdict = events.find((e) => e.type === "verdict");
     expect(verdict?.type).toBe("verdict");
-    if (verdict?.type === "verdict") expect(verdict.usage.agentCalls).toBe(8); // 4 + comparer + da + reassessor + judge
+    if (verdict?.type === "verdict") expect(verdict.usage.agentCalls).toBe(9); // 4 + understander + comparer + da + reassessor + judge
   });
 
   it("skips reassessment when the devil's advocate fails", async () => {
@@ -347,7 +349,9 @@ describe("runCouncil — resilience", () => {
     }
   });
 
-  it("V0.2.2.3: general-set question whose Judge says INSUFFICIENT_INFORMATION still gets a general-set provisional verdict", async () => {
+  it("V0.2.2.3: general-set question whose Judge says INSUFFICIENT_INFORMATION still gets a type-appropriate provisional verdict", async () => {
+    // "Why is the sky blue?" classifies as EXPLANATION (V0.3 per-type sets),
+    // so the provisional verdict must come from the explanation set.
     const insufficient = JSON.stringify({
       verdict: "INSUFFICIENT_INFORMATION",
       score: 0,
@@ -381,9 +385,9 @@ describe("runCouncil — resilience", () => {
       expect(verdict.verdict.verdict).not.toBe("INSUFFICIENT_INFORMATION");
       expect(verdict.verdict.degraded).toBe(true);
       expect(verdict.verdict.provisional).toBe(true);
-      // General set — the provisional ceiling is VALIDATE, never a product-only
-      // category like BUILD_MVP/PIVOT/DO_NOT_BUILD.
-      expect(["VALIDATE", "RECONSIDER", "REJECT"].includes(verdict.verdict.verdict)).toBe(true);
+      // Explanation set (V0.3) — the provisional ceiling is UNRESOLVED, never
+      // a product-only category like BUILD_MVP/PIVOT/DO_NOT_BUILD.
+      expect(["REFUTED", "PARTIALLY_SUPPORTED", "UNRESOLVED"].includes(verdict.verdict.verdict)).toBe(true);
     }
   });
 
@@ -402,7 +406,13 @@ describe("runCouncil — resilience", () => {
 
     await collect(runCouncil({ mode: "FULL", question: "Should I buy this phone?", provider }));
 
-    const analytical = calls.filter((c) => !c.system.includes("JUDGE") && !c.system.includes("COMPARER"));
+    // The V0.3 understander call is NOT an analytical agent — exclude it.
+    const analytical = calls.filter(
+      (c) =>
+        !c.system.includes("JUDGE") &&
+        !c.system.includes("COMPARER") &&
+        !c.system.includes("question-understander"),
+    );
     expect(analytical).toHaveLength(4);
     // Every analyst sees the classification label and its own emphasis.
     for (const c of analytical) {
@@ -544,7 +554,10 @@ describe("runCouncil — resilience", () => {
 
     // First run: the Reasoner fails; the rest complete and the (healthy) Judge
     // still produces a verdict — the failed member is preserved on the run.
-    const first = await collect(runCouncil({ mode: "FULL", question: "Q?", provider }));
+    // (Business question so the mocked BUILD verdict is inside the allowed set.)
+    const first = await collect(
+      runCouncil({ mode: "FULL", question: "Should I start a business?", provider }),
+    );
     const firstReasoner = first.find((e) => e.type === "agent:done" && e.analysis.agent === "reasoner");
     expect(firstReasoner?.type).toBe("agent:done");
     if (firstReasoner?.type === "agent:done") expect(firstReasoner.analysis.failed).toBe(true);
@@ -568,7 +581,7 @@ describe("runCouncil — resilience", () => {
     const resumed = await collect(
       runCouncil({
         mode: "FULL",
-        question: "Q?",
+        question: "Should I start a business?",
         provider: reasonerOk,
         sessionId: "sess-1",
         resume: { agents, analyses, retryAgent: "reasoner" },
@@ -661,31 +674,42 @@ describe("runCouncil — resilience", () => {
     expect(verdict?.type).toBe("verdict");
     if (verdict?.type === "verdict") {
       const calls = verdict.usage.calls ?? [];
-      expect(calls).toHaveLength(6); // 4 analysts + comparer + judge
-      expect(
-        calls.map((c) => c.stage).sort(),
-      ).toEqual(["analysis", "analysis", "analysis", "analysis", "comparison", "judge"]);
+      // 4 analysts + understander + comparer + judge (the injected mock
+      // provider is not Ollama, so the V0.3 understanding stage runs).
+      expect(calls).toHaveLength(7);
+      expect(calls.map((c) => c.stage).sort()).toEqual([
+        "analysis",
+        "analysis",
+        "analysis",
+        "analysis",
+        "comparison",
+        "judge",
+        "understanding",
+      ]);
       expect(calls.every((c) => c.status === "COMPLETED")).toBe(true);
       expect(calls.every((c) => c.model === "mock-model")).toBe(true);
       expect(calls.every((c) => c.retries === 0)).toBe(true);
       expect(calls.every((c) => c.durationMs >= 0)).toBe(true);
       expect(calls.every((c) => c.inputTokens === 10 && c.outputTokens === 20)).toBe(true);
       // Telemetry sums must match the aggregate counters.
-      expect(verdict.usage.agentCalls).toBe(6);
-      expect(verdict.usage.inputTokens).toBe(60);
-      expect(verdict.usage.outputTokens).toBe(120);
+      expect(verdict.usage.agentCalls).toBe(7);
+      expect(verdict.usage.inputTokens).toBe(70);
+      expect(verdict.usage.outputTokens).toBe(140);
     }
   });
 
   it("V0.2.2.4: telemetry records retries and attributes timeout outcomes", async () => {
-    // Transient failure: first call fails, the single retry succeeds.
-    let calls = 0;
+    // Transient failure: first Reasoner call fails, the single retry succeeds.
+    // The V0.3 understander fires first, so count REASONER calls, not all calls.
+    let reasonerCalls = 0;
     const provider: ModelProvider = {
       id: "mock",
       model: "mock-model",
       async chat(input: ProviderChatInput): Promise<ProviderChatResult> {
-        calls += 1;
-        if (input.system.includes("REASONER") && calls === 1) throw new Error("transient");
+        if (input.system.includes("REASONER")) {
+          reasonerCalls += 1;
+          if (reasonerCalls === 1) throw new Error("transient");
+        }
         if (input.system.includes("JUDGE")) return { content: verdictJson, usage: { inputTokens: 1, outputTokens: 1 } };
         if (input.system.includes("COMPARER")) return { content: comparisonJson, usage: { inputTokens: 1, outputTokens: 1 } };
         return { content: agentJson(), usage: { inputTokens: 1, outputTokens: 1 } };
@@ -733,10 +757,13 @@ describe("runCouncil — resilience", () => {
           ? "judge"
           : input.system.includes("COMPARER")
             ? "comparison"
-            : "analysis";
+            : input.system.includes("question-understander")
+              ? "understanding"
+              : "analysis";
         seen.push({ kind, maxTokens: input.maxTokens });
         if (kind === "judge") return { content: verdictJson, usage: { inputTokens: 1, outputTokens: 1 } };
         if (kind === "comparison") return { content: comparisonJson, usage: { inputTokens: 1, outputTokens: 1 } };
+        if (kind === "understanding") return { content: agentJson(), usage: { inputTokens: 1, outputTokens: 1 } };
         return { content: agentJson(), usage: { inputTokens: 1, outputTokens: 1 } };
       },
     };
@@ -744,6 +771,8 @@ describe("runCouncil — resilience", () => {
     expect(seen.filter((s) => s.kind === "analysis").every((s) => s.maxTokens === expectedAnalysis)).toBe(true);
     expect(seen.find((s) => s.kind === "comparison")?.maxTokens).toBe(expectedComparison);
     expect(seen.find((s) => s.kind === "judge")?.maxTokens).toBe(expectedJudge);
+    // V0.3: the understander runs on its own small budget (320 tokens max).
+    expect(seen.find((s) => s.kind === "understanding")?.maxTokens).toBe(320);
   });
 
   it("V0.2.2.4: keeps full analyses for the Judge when the comparison falls back empty (no evidence loss)", async () => {
@@ -769,6 +798,67 @@ describe("runCouncil — resilience", () => {
     expect(judgeCalls[0]).toContain("Assumptions:");
     expect(judgeCalls[0]).toContain("Risks:");
     expect(judgeCalls[0]).toContain("Missing info:");
+  });
+
+  // ── V0.3 (Part 8.3): targeted re-analysis — affected agents re-run, the
+  // rest are reused, and the Judge must NEVER see two versions of one member.
+
+  it("V0.3: reconsider re-runs only the affected agents and does not double-feed the Judge", async () => {
+    const judgeUsers: string[] = [];
+    let call = 0;
+    const provider: ModelProvider = {
+      id: "mock",
+      model: "mock-model",
+      async chat(input: ProviderChatInput): Promise<ProviderChatResult> {
+        call += 1;
+        if (input.system.includes("JUDGE")) {
+          judgeUsers.push(input.user);
+          return { content: verdictJson, usage: { inputTokens: 1, outputTokens: 1 } };
+        }
+        if (input.system.includes("COMPARER"))
+          return { content: comparisonJson, usage: { inputTokens: 1, outputTokens: 1 } };
+        return { content: agentJson(), usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+
+    const priorAnalyses: AgentAnalysis[] = [
+      { ...(JSON.parse(agentJson()) as Omit<AgentAnalysis, "agent" | "name">), agent: "reasoner", name: "Reasoner" },
+      { ...(JSON.parse(agentJson()) as Omit<AgentAnalysis, "agent" | "name">), agent: "skeptic", name: "Skeptic" },
+      { ...(JSON.parse(agentJson()) as Omit<AgentAnalysis, "agent" | "name">), agent: "practicalist", name: "Practicalist" },
+      { ...(JSON.parse(agentJson()) as Omit<AgentAnalysis, "agent" | "name">), agent: "perspective", name: "Perspective" },
+    ];
+    const priorVerdict = JSON.parse(verdictJson) as CouncilVerdict;
+
+    const events = await collect(
+      runCouncil({
+        mode: "FULL",
+        question: "Should I start a business?",
+        provider,
+        sessionId: "sess-1",
+        reconsider: {
+          priorAnalyses,
+          priorVerdict,
+          affectedAgents: ["skeptic"],
+          mergedContext: ["my budget is $5,000"],
+        },
+      }),
+    );
+
+    // Only the affected member re-runs; the others are reused, not re-emitted.
+    const done = events.filter((e) => e.type === "agent:done");
+    expect(done.map((d) => (d.type === "agent:done" ? d.analysis.agent : ""))).toEqual(["skeptic"]);
+
+    // The Judge prompt must contain the skeptic exactly ONCE (the fresh
+    // analysis) — never the old + new version of the same member. Word-boundary
+    // match so "Skepticism" (a capability label) does not count.
+    expect(judgeUsers).toHaveLength(1);
+    const skepticMentions = (judgeUsers[0].match(/\bSkeptic\b/g) ?? []).length;
+    expect(skepticMentions).toBe(1);
+
+    // The verdict carries a diff vs the previous verdict.
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
+    if (verdict?.type === "verdict") expect(verdict.diff).toBeDefined();
   });
 
   it("attributes a timed-out analyst as TIMED_OUT, not just FAILED (Part 10)", async () => {

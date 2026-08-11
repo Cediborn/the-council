@@ -249,12 +249,73 @@ export const resumeSchema = z.object({
   retryAgent: z.enum(AGENT_KEY_ENUM),
 });
 
-/** Incoming API request body. */
+/** One answered clarification, carried into the convene request (V0.3 Part 7). */
+export const clarificationAnswerSchema = z.object({
+  id: z.string().min(1).max(80),
+  answer: z.string().trim().min(1, "Answer the question.").max(2000),
+});
+
+/** V0.3: context a user can supply when convening (answers to clarifications). */
+export const councilContextSchema = z.object({
+  clarifications: z.array(clarificationAnswerSchema).min(1).max(4).optional(),
+  assumptions: z.array(z.string().min(1).max(500)).max(6).optional(),
+});
+
+/** Incoming API request body for /api/council (V0.3 adds context). */
 export const councilRequestSchema = z.object({
   question: z.string().trim().min(1, "Ask the Council something.").max(6000, "Question too long (max 6000 characters)."),
   mode: z.enum(["QUICK", "FULL", "DEEP"]),
   sessionId: z.string().min(1).max(120).optional(),
   resume: resumeSchema.optional(),
+  context: councilContextSchema.optional(),
+});
+
+/** V0.3: /api/council/clarify — ask whether a question needs clarification first. */
+export const clarifyRequestSchema = z.object({
+  question: z.string().trim().min(1).max(6000),
+  mode: z.enum(["QUICK", "FULL", "DEEP"]),
+});
+
+/** V0.3: LLM understander output (Part 6.3) — the model never sees this file. */
+export const understanderSchema = z.object({
+  restatedQuestion: z.string().min(1).max(800).catch(""),
+  intent: z.string().min(1).max(300).catch(""),
+  inferredAssumptions: z
+    .preprocess(
+      (v) => (typeof v === "string" && v.trim() ? [v] : v),
+      z.array(z.string().min(1).max(300)).max(4).default([]),
+    ),
+  missingCritical: z
+    .preprocess(
+      (v) => (typeof v === "string" && v.trim() ? [v] : v),
+      z.array(z.string().min(1).max(300)).max(3).default([]),
+    ),
+  reframing: z.string().max(400).default(""),
+});
+
+/** V0.3: direct-answer output for EXPLANATION_REQUEST follow-ups (Part 8.2). */
+export const directAnswerSchema = z.object({
+  answer: z.string().min(1).max(2500),
+});
+
+/**
+ * V0.3: /api/council/followup — a reply after a verdict. The client sends the
+ * minimal stateless context it holds: the original question, mode, session id,
+ * the prior verdict, and the prior completed analyses (so a targeted
+ * re-analysis can reuse the untouched ones).
+ */
+export const followupRequestSchema = z.object({
+  question: z.string().trim().min(1).max(6000),
+  mode: z.enum(["QUICK", "FULL", "DEEP"]),
+  reply: z.string().trim().min(1, "Say something.").max(4000),
+  sessionId: z.string().min(1).max(120).optional(),
+  /** The verdict this reply responds to. */
+  priorVerdict: verdictSchema,
+  /** Every analysis from the prior run (failed ones included). */
+  priorAnalyses: z.array(resumeAnalysisSchema).min(1).max(8),
+  /** Accumulated context from earlier follow-ups (stateless thread carry). */
+  mergedContext: z.array(z.string().min(1).max(1200)).max(12).optional(),
+  explicitAssumptions: z.array(z.string().min(1).max(500)).max(6).optional(),
 });
 
 export type ParsedVerdict = z.infer<typeof verdictSchema>;

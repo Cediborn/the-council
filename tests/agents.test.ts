@@ -223,26 +223,36 @@ describe("agent prompt contracts (V0.2.1 Parts 6-11, 16, 26, 27)", () => {
     expect(business).not.toMatch(/"REFINE"/);
 
     const explanation = judgeOutputContract("explanation");
-    expect(explanation).toMatch(/"REFINE"/);
+    expect(explanation).toMatch(/"CONFIRMED"/);
+    expect(explanation).toMatch(/"UNRESOLVED"/);
     expect(explanation).not.toMatch(/"PIVOT"/);
     expect(explanation).not.toMatch(/"BUILD_MVP"/);
 
     const math = judgeOutputContract("mathematical");
-    expect(math).toMatch(/"REJECT"/);
+    expect(math).toMatch(/"CORRECT"/);
+    expect(math).toMatch(/"INCORRECT"/);
+    expect(math).not.toMatch(/"REJECT"/);
   });
 
   it("V0.2.2.2: judgeSystemFor lists the categories allowed for the question type", () => {
     expect(judgeSystemFor("business")).toMatch(/BUILD_MVP/);
     expect(judgeSystemFor("explanation")).not.toMatch(/BUILD_MVP/);
-    expect(judgeSystemFor("explanation")).toMatch(/REFINE/);
+    expect(judgeSystemFor("explanation")).toMatch(/CONFIRMED/);
+    expect(judgeSystemFor("mathematical")).toMatch(/CORRECT/);
   });
 
-  it("V0.2.2.2: verdictsForType maps product vs general sets (Part 13)", () => {
+  it("V0.2.2.2 + V0.3: verdictsForType maps per-type sets (Part 13)", () => {
     expect(verdictsForType("business")).toContain("BUILD_MVP");
     expect(verdictsForType("decision")).toContain("PIVOT");
     expect(verdictsForType("explanation")).not.toContain("BUILD_MVP");
-    expect(verdictsForType("explanation")).toContain("REFINE");
+    expect(verdictsForType("explanation")).toContain("CONFIRMED");
     expect(verdictsForType("business")).not.toContain("REFINE");
+    // V0.3: maths is judged with CORRECT/INCORRECT, not product verdicts.
+    expect(verdictsForType("mathematical")).toContain("CORRECT");
+    expect(verdictsForType("mathematical")).not.toContain("BUILD");
+    // An argument is judged SUPPORTED/UNSUPPORTED, not PIVOT.
+    expect(verdictsForType("argumentative")).toContain("SUPPORTED");
+    expect(verdictsForType("argumentative")).not.toContain("PIVOT");
   });
 
   it("V0.2.2.3: INSUFFICIENT_INFORMATION is never offered to the model for ANY question type", () => {

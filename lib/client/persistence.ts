@@ -1,4 +1,12 @@
-import type { CouncilEvent, CouncilMode, CouncilUsage, CouncilVerdict } from "@/lib/council/types";
+import type {
+  ClarificationQuestion,
+  CouncilEvent,
+  CouncilMode,
+  CouncilUsage,
+  CouncilVerdict,
+  FollowUpIntent,
+  VerdictDiff,
+} from "@/lib/council/types";
 
 /**
  * COUNCIL V0.2.2.2 — client-side session persistence (Part 11 / TEST 6).
@@ -104,6 +112,118 @@ export function clearSessions(): void {
   const storage = getStorage();
   try {
     storage?.removeItem(STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+// ── V0.3 conversation threads ────────────────────────────────────────────────
+// Threads persist SUMMARIZED turns (user decision #10): question + reply + final
+// verdict + diff per turn. Raw per-turn events (agent analyses) are NOT stored
+// — they live in memory for the active session only. Old single-run sessions in
+// `council.sessions.v1` are untouched.
+
+export interface StoredTurn {
+  id: string;
+  kind: "user" | "assistant";
+  type: string;
+  text?: string;
+  verdict?: CouncilVerdict;
+  usage?: CouncilUsage;
+  diff?: VerdictDiff;
+  intent?: FollowUpIntent;
+  clarifications?: ClarificationQuestion[];
+  answers?: { id: string; answer: string }[];
+  startedAt: number;
+}
+
+export interface StoredThread {
+  version: 1;
+  id: string;
+  mode: CouncilMode;
+  question: string;
+  startedAt: number;
+  mergedContext: string[];
+  explicitAssumptions: string[];
+  turns: StoredTurn[];
+}
+
+const THREADS_KEY = "council.threads.v1";
+const MAX_THREADS = 5;
+
+function isStoredTurn(t: unknown): t is StoredTurn {
+  if (typeof t !== "object" || t === null) return false;
+  const r = t as Record<string, unknown>;
+  return (
+    typeof r.id === "string" &&
+    (r.kind === "user" || r.kind === "assistant") &&
+    typeof r.type === "string" &&
+    typeof r.startedAt === "number"
+  );
+}
+
+function isStoredThread(t: unknown): t is StoredThread {
+  if (typeof t !== "object" || t === null) return false;
+  const r = t as Record<string, unknown>;
+  return (
+    r.version === 1 &&
+    typeof r.id === "string" &&
+    typeof r.question === "string" &&
+    Array.isArray(r.turns) &&
+    r.turns.every(isStoredTurn)
+  );
+}
+
+export function loadThreads(): StoredThread[] {
+  const storage = getStorage();
+  if (!storage) return [];
+  try {
+    const raw = storage.getItem(THREADS_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((t): t is StoredThread => isStoredThread(t));
+  } catch {
+    return [];
+  }
+}
+
+function totalBytesThreads(threads: StoredThread[]): number {
+  try {
+    return JSON.stringify(threads).length;
+  } catch {
+    return Infinity;
+  }
+}
+
+/** Insert (or update) a thread, dedupe by id, cap count + size. */
+export function saveThread(thread: StoredThread): StoredThread[] {
+  const storage = getStorage();
+  const threads = loadThreads().filter((t) => t.id !== thread.id);
+  threads.unshift(thread);
+  while (threads.length > MAX_THREADS) threads.pop();
+  while (threads.length > 1 && totalBytesThreads(threads) > MAX_BYTES) threads.pop();
+  if (storage) {
+    try {
+      storage.setItem(THREADS_KEY, JSON.stringify(threads));
+    } catch {
+      // quota — drop oldest until it fits
+      try {
+        let trimmed = threads;
+        while (trimmed.length > 1 && totalBytesThreads(trimmed) > MAX_BYTES) trimmed = trimmed.slice(0, -1);
+        storage.setItem(THREADS_KEY, JSON.stringify(trimmed));
+      } catch {
+        // give up silently
+      }
+    }
+  }
+  return threads;
+}
+
+export function clearThreads(): void {
+  const storage = getStorage();
+  try {
+    storage?.removeItem(THREADS_KEY);
   } catch {
     // ignore
   }

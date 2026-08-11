@@ -1,4 +1,4 @@
-# COUNCIL — V0.2.2.4
+# COUNCIL — V0.3
 
 A general-purpose, multi-agent **deliberation engine**. Ask it anything —
 everyday decisions, school questions, business ideas, code questions, life
@@ -8,7 +8,12 @@ honest verdict.
 
 COUNCIL is designed to optimize for **decision quality and truthfulness, not
 user satisfaction**. It will tell you when you're wrong, when an idea is
-weak, or when there simply isn't enough information.
+weak, or when there simply isn't enough information. V0.3 adds a
+**conversational layer**: it understands informal and incomplete prompts,
+asks the smallest number of clarifying questions that actually matter, and
+keeps talking to you after the verdict — corrections, new facts, and
+"what if" questions trigger a targeted re-deliberation instead of a dead
+end or a fresh run.
 
 ## What V0.2 does
 
@@ -29,6 +34,52 @@ weak, or when there simply isn't enough information.
    explained, and you can retry or start fresh. **No page refresh is ever
    required to recover** (V0.2's headline reliability fix).
 
+## What V0.3 adds (conversational interaction)
+
+- **The Council takes responsibility for understanding the user.** A short,
+  informal, or ambiguous prompt is not treated as user failure. A lightweight
+  Question Understanding layer restates the intent, surfaces the assumptions
+  it will work under (visible and correctable), and flags what is genuinely
+  missing — before anything expensive runs.
+- **Ask-first, only when it matters.** When one or two missing details would
+  substantially change the recommendation, the Council asks a short
+  clarification round (at most 2 bank questions, each with a "why it
+  matters" note) and proceeds with your answers. A bare "should I start a
+  business?" gets useful analysis plus an honest list of what would sharpen
+  it — never a dead-end "insufficient information" card.
+- **Casual input never convenes a Council.** Greetings and acknowledgments
+  get a quick chat reply — no model calls, no waiting.
+- **Conversations continue after the verdict.** Reply naturally — "that's
+  not what I meant", "I already have customers", "my budget is $5,000",
+  "explain point two", "what about Ghana?" — and the Council routes your
+  reply:
+  - **Corrections / new information** → a **targeted re-analysis**: only the
+    agents whose lens the new fact touches re-run (concurrently), the rest of
+    the analysis is reused, and the Judge re-deliberates and may uphold,
+    revise, or overturn the verdict. No Devil's Advocate / Reassessment on
+    follow-ups (auto-degraded lighter pipeline).
+  - **Explanation requests** → a direct answer from the existing verdict
+    (one small call, no re-convening).
+  - **Explicit challenge** → an honest "not yet" note (Challenge ships later);
+    normal disagreement goes through conversation instead.
+- **Verdict revisions show what changed.** Every re-deliberated verdict
+  carries a deterministic diff vs the previous one — verdict/score/confidence
+  movement, new and dropped key reasons — so you can see the Council
+  responding to you.
+- **Per-type verdict sets.** The product-flavoured verdicts no longer leak
+  into every question: business/decision/planning/comparison/creative get
+  `BUILD`/`BUILD_MVP`/`PIVOT`/`DO_NOT_BUILD`; maths gets
+  `CORRECT`/`INCORRECT`/`PARTIALLY_CORRECT`/`UNVERIFIABLE`; explanations get
+  `CONFIRMED`/`REFUTED`/`PARTIALLY_SUPPORTED`/`UNRESOLVED`; arguments get
+  `SUPPORTED`/`UNSUPPORTED`/`MIXED`/`UNDETERMINED`; technical gets
+  `SOUND`/`FLAWED`/`RISKY`/`UNVERIFIED`; troubleshooting gets
+  `FIXED`/`DIRECTION_FOUND`/`PARTIAL`/`STILL_UNRESOLVED`; general keeps
+  `AGREE`/`REFINE`/`VALIDATE`/`RECONSIDER`/`REJECT`.
+- **Threaded persistence.** A conversation is a thread of turns; only
+  summarized turns are persisted (localStorage stays capped) so long
+  conversations keep working, and a soft turn limit nudges you to start
+  fresh when a thread gets long.
+
 ## Modes
 
 | Mode | Pipeline |
@@ -46,14 +97,11 @@ The four analytical agents:
 
 The **Judge** does not vote. It weighs argument quality — a strong minority
 argument can outweigh a weak majority. The verdict set depends on the question
-type (V0.2.2.2): product/business-flavoured questions (business, decision,
-planning, comparison, troubleshooting, creative) get `BUILD`, `BUILD_MVP`,
-`PIVOT`, `DO_NOT_BUILD`; everything else keeps `BUILD`, `REFINE`, `VALIDATE`,
-`RECONSIDER`, `REJECT`. `INSUFFICIENT_INFORMATION` is **never offered to the
-model** (V0.2.2.3): the Judge always returns a verdict and reports its
-uncertainty separately via `informationSufficiency` — the no-verdict state is
-reserved exclusively for the system's genuinely-impossible case (nothing to
-synthesize from).
+type (V0.3 per-type sets — see above). `INSUFFICIENT_INFORMATION` is **never
+offered to the model** (V0.2.2.3): the Judge always returns a verdict and
+reports its uncertainty separately via `informationSufficiency` — the
+no-verdict state is reserved exclusively for the system's genuinely-impossible
+case (nothing to synthesize from).
 
 ## V0.2.2.4 changes (performance forensics)
 
@@ -302,8 +350,10 @@ verdict meta line.
 - **Per-stage model routing.** Stages can be pinned to different models via
   `COUNCIL_MODEL_ANALYSIS`, `COUNCIL_MODEL_COMPARISON`,
   `COUNCIL_MODEL_DEVILS_ADVOCATE`, `COUNCIL_MODEL_REASSESSMENT`, and
-  `COUNCIL_MODEL_JUDGE` env vars. Timeouts are configurable via
-  `COUNCIL_TIMEOUT_MS` (default 240s for Ollama, 120s for cloud providers).
+  `COUNCIL_MODEL_JUDGE` env vars. V0.3 adds `COUNCIL_MODEL_UNDERSTANDING`
+  and `COUNCIL_MODEL_DIRECT_ANSWER` for the conversational stages. Timeouts
+  are configurable via `COUNCIL_TIMEOUT_MS` (default 240s for Ollama, 120s
+  for cloud providers).
   Per-stage output caps are tunable via `COUNCIL_ANALYSIS_TOKENS`,
   `COUNCIL_COMPARISON_TOKENS`, `COUNCIL_DEVILS_ADVOCATE_TOKENS`,
   `COUNCIL_REASSESSMENT_TOKENS`, and `COUNCIL_JUDGE_TOKENS`.
@@ -370,9 +420,14 @@ npm run typecheck  # TypeScript only
 app/
   page.tsx                    # Council screen
   api/council/route.ts        # SSE endpoint — streams real pipeline events
+  api/council/clarify/route.ts # V0.3: deterministic pre-convene clarification round
+  api/council/followup/route.ts # V0.3: conversational follow-ups (direct reply | targeted re-analysis)
 components/council/
-  CouncilApp.tsx              # phase state machine: idle → run → verdict/error/cancelled
+  CouncilApp.tsx              # phase state machine + conversation thread + follow-up input
   QuestionScreen.tsx          # question, mode picker, Convene button
+  ClarificationCard.tsx       # V0.3: ask-first clarification round (answers merged into context)
+  ConversationThread.tsx      # V0.3: threaded turns with revision diffs
+  FollowUpInput.tsx           # V0.3: natural-language reply box after a verdict
   DeliberationPanel.tsx       # live stage visualization + Cancel
   VerdictView.tsx             # verdict card + how-it-formed view + expandable analyses
   ExpandableAnalysis.tsx      # shared expandable member card (every surface)
@@ -380,19 +435,24 @@ components/council/
   icons.tsx                   # hand-drawn SVG icons — no emojis
 lib/council/
   agents.ts                   # agent registry + classifier (type/capabilities) + selection
-  orchestrator.ts             # pipeline: classify → analyze → compare → DA → reassess → judge
+  orchestrator.ts             # pipeline: classify → analyze → compare → DA → reassess → judge (+ reconsider)
   synthesizer.ts              # deterministic provisional verdict when the Judge fails
+  understand.ts               # V0.3: deterministic intent gate, gap detector, ambiguity signals
+  clarification.ts            # V0.3: clarification bank (bank-first, ≤2 questions)
+  understander.ts             # V0.3: optional LLM question-understander (ambiguity only)
+  followup.ts                 # V0.3: intent classifier + affected-agent mapping + verdict diff
+  direct.ts                   # V0.3: direct answers (explanation requests) + small-talk replies
   schemas.ts                  # Zod validation for every model output
   parse.ts                    # safe JSON extraction + graceful fallback
   providers/                  # model router: ollama | openai-compatible | per-stage
   usage.ts                    # per-session cost/usage tracking (future tiers)
 lib/client/
   councilState.ts             # pure session state machine: IDLE→…→COMPLETE/DEGRADED/FAILED
-  useCouncil.ts               # SSE consumer + per-member retry + persistence
-  persistence.ts              # localStorage session history (TEST 6)
+  useCouncil.ts               # SSE consumer + conversation loop (clarify → run → follow-up)
+  persistence.ts              # localStorage session + thread history (TEST 6)
   deliberation.ts             # stage/agent visual state derivation (pure)
-lib/council/types.ts          # domain types: classification, comparison, verdict, events
-tests/                        # unit tests (schemas, parsing, orchestrator, synthesizer, state)
+lib/council/types.ts          # domain types: classification, comparison, verdict, events, thread
+tests/                        # unit tests (schemas, parsing, orchestrator, synthesizer, state, v0.3)
 ```
 
 ## Design notes

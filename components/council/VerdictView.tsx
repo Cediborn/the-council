@@ -9,6 +9,7 @@ import type {
   CouncilUsage,
   CouncilVerdict,
   VerdictCategory,
+  VerdictDiff,
 } from "@/lib/council/types";
 import { labelForStance } from "@/lib/council/agents";
 import {
@@ -28,6 +29,7 @@ import { ExpandableAnalysis, ExpandableCard } from "./ExpandableAnalysis";
 import type { ComponentType, SVGProps } from "react";
 
 const VERDICT_META: Record<VerdictCategory, { label: string; tone: string; blurb: string }> = {
+  // Product / proposal set
   BUILD: {
     label: "Build",
     tone: "mint",
@@ -48,6 +50,12 @@ const VERDICT_META: Record<VerdictCategory, { label: string; tone: string; blurb
     tone: "bad",
     blurb: "Fundamentally weak under the available information.",
   },
+  // General set
+  AGREE: {
+    label: "Agree",
+    tone: "mint",
+    blurb: "The claim or position is well supported by the available reasoning.",
+  },
   REFINE: {
     label: "Refine",
     tone: "info",
@@ -67,6 +75,111 @@ const VERDICT_META: Record<VerdictCategory, { label: string; tone: string; blurb
     label: "Reject",
     tone: "bad",
     blurb: "Fundamentally weak under the available information.",
+  },
+  // Mathematical set
+  CORRECT: {
+    label: "Correct",
+    tone: "mint",
+    blurb: "The mathematical reasoning and result are correct.",
+  },
+  INCORRECT: {
+    label: "Incorrect",
+    tone: "bad",
+    blurb: "The mathematical reasoning contains an error.",
+  },
+  PARTIALLY_CORRECT: {
+    label: "Partially Correct",
+    tone: "warn",
+    blurb: "The direction is right but the reasoning or result has flaws.",
+  },
+  UNVERIFIABLE: {
+    label: "Unverifiable",
+    tone: "info",
+    blurb: "The mathematics cannot be verified from the information available.",
+  },
+  // Explanation / educational set
+  CONFIRMED: {
+    label: "Confirmed",
+    tone: "mint",
+    blurb: "The explanation or claim is supported by the available evidence.",
+  },
+  REFUTED: {
+    label: "Refuted",
+    tone: "bad",
+    blurb: "The claim is contradicted by the available evidence.",
+  },
+  PARTIALLY_SUPPORTED: {
+    label: "Partially Supported",
+    tone: "warn",
+    blurb: "Parts of the claim hold; others are uncertain or wrong.",
+  },
+  UNRESOLVED: {
+    label: "Unresolved",
+    tone: "info",
+    blurb: "The evidence does not settle the claim.",
+  },
+  // Argumentative set
+  SUPPORTED: {
+    label: "Supported",
+    tone: "mint",
+    blurb: "The argument is logically strong and well supported.",
+  },
+  UNSUPPORTED: {
+    label: "Unsupported",
+    tone: "bad",
+    blurb: "The argument does not survive scrutiny.",
+  },
+  MIXED: {
+    label: "Mixed",
+    tone: "warn",
+    blurb: "The argument has real strengths and serious weaknesses.",
+  },
+  UNDETERMINED: {
+    label: "Undetermined",
+    tone: "info",
+    blurb: "There is not enough to judge the argument fairly.",
+  },
+  // Technical set
+  SOUND: {
+    label: "Sound",
+    tone: "mint",
+    blurb: "The technical approach or code is correct and defensible.",
+  },
+  FLAWED: {
+    label: "Flawed",
+    tone: "bad",
+    blurb: "The technical approach contains a substantive defect.",
+  },
+  RISKY: {
+    label: "Risky",
+    tone: "warn",
+    blurb: "It may work but carries significant technical risk.",
+  },
+  UNVERIFIED: {
+    label: "Unverified",
+    tone: "info",
+    blurb: "Correctness cannot be established from the information available.",
+  },
+  // Troubleshooting set
+  FIXED: {
+    label: "Fixed",
+    tone: "mint",
+    blurb: "The cause is identified and the problem is resolved.",
+  },
+  DIRECTION_FOUND: {
+    label: "Direction Found",
+    tone: "achievement",
+    blurb: "A plausible cause and next step were identified.",
+  },
+  PARTIAL: {
+    label: "Partial",
+    tone: "warn",
+    blurb: "Some causes ruled out, but the problem is not fully resolved.",
+  },
+  STILL_UNRESOLVED: {
+    label: "Still Unresolved",
+    tone: "bad",
+    blurb: "The problem remains unexplained.",
   },
   INSUFFICIENT_INFORMATION: {
     label: "Insufficient Information",
@@ -102,10 +215,31 @@ const VERDICT_ICON: Record<VerdictCategory, ComponentType<SVGProps<SVGSVGElement
   BUILD_MVP: RocketIcon,
   PIVOT: RouteIcon,
   DO_NOT_BUILD: BanIcon,
+  AGREE: ShieldIcon,
   REFINE: WrenchIcon,
   VALIDATE: ScalesIcon,
   RECONSIDER: RotateIcon,
   REJECT: XIcon,
+  CORRECT: ShieldIcon,
+  INCORRECT: XIcon,
+  PARTIALLY_CORRECT: WrenchIcon,
+  UNVERIFIABLE: AlertIcon,
+  CONFIRMED: ShieldIcon,
+  REFUTED: BanIcon,
+  PARTIALLY_SUPPORTED: WrenchIcon,
+  UNRESOLVED: AlertIcon,
+  SUPPORTED: ShieldIcon,
+  UNSUPPORTED: BanIcon,
+  MIXED: RouteIcon,
+  UNDETERMINED: AlertIcon,
+  SOUND: ShieldIcon,
+  FLAWED: XIcon,
+  RISKY: RouteIcon,
+  UNVERIFIED: AlertIcon,
+  FIXED: WrenchIcon,
+  DIRECTION_FOUND: RouteIcon,
+  PARTIAL: WrenchIcon,
+  STILL_UNRESOLVED: AlertIcon,
   INSUFFICIENT_INFORMATION: AlertIcon,
 };
 
@@ -346,6 +480,39 @@ function ProvisionalBanner({ verdict }: { verdict: CouncilVerdict }) {
   );
 }
 
+/** V0.3 (Part 3 / §5) — a revision diff strip on re-deliberated verdicts. */
+function RevisionBanner({ diff }: { diff: VerdictDiff }) {
+  if (!diff.changed) {
+    return (
+      <div className="rounded-xl border border-brand/25 bg-brand/5 p-4">
+        <p className="font-display text-sm font-bold text-brand">Reconsidered — conclusion upheld</p>
+        <p className="mt-0.5 text-xs leading-relaxed text-ink-soft">
+          The Council reconsidered in light of your new information and reached the same conclusion.
+        </p>
+      </div>
+    );
+  }
+  const deltas: string[] = [];
+  if (diff.verdictChanged) deltas.push("verdict changed");
+  if (diff.scoreDelta !== 0) deltas.push(`score ${diff.scoreDelta > 0 ? "▲" : "▼"} ${Math.abs(diff.scoreDelta).toFixed(1)}`);
+  if (diff.confidenceDelta !== 0) deltas.push(`confidence ${diff.confidenceDelta > 0 ? "▲" : "▼"} ${Math.abs(diff.confidenceDelta)}%`);
+  return (
+    <div className="rounded-xl border border-brand/30 bg-brand/5 p-4">
+      <div className="flex items-start gap-3">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-brand/40 bg-brand/10 text-brand">
+          <RotateIcon className="h-4 w-4" />
+        </span>
+        <div>
+          <p className="font-display text-sm font-bold text-brand">
+            Revised verdict{deltas.length > 0 ? ` — ${deltas.join(" · ")}` : ""}
+          </p>
+          <p className="mt-0.5 text-xs leading-relaxed text-ink-soft">{diff.summaryNote}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /**
  * V0.2.2.3 (Part 7/8) — one or more analytical members could not respond. The
  * Council continued with the survivors, but the loss is stated plainly instead
@@ -542,11 +709,14 @@ export function VerdictView({
   usage,
   events,
   onRetryAgent,
+  diff,
 }: {
   verdict: CouncilVerdict;
   usage: CouncilUsage;
   events: CouncilEvent[];
   onRetryAgent?: (agent: AgentKey) => void;
+  /** V0.3: revision diff vs the previous verdict (follow-up re-deliberations). */
+  diff?: VerdictDiff;
 }) {
   const meta = VERDICT_META[verdict.verdict];
   const analyses = events.filter((e): e is Extract<CouncilEvent, { type: "agent:done" }> => e.type === "agent:done");
@@ -583,6 +753,12 @@ export function VerdictView({
       <Reveal delay={0.27}>
         <PartialCouncilBanner members={failedMembers} />
       </Reveal>
+
+      {diff && (
+        <Reveal delay={0.29} className="mt-3">
+          <RevisionBanner diff={diff} />
+        </Reveal>
+      )}
 
       <Reveal
         delay={0.3}

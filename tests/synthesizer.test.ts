@@ -96,16 +96,33 @@ describe("synthesizeProvisionalVerdict — deterministic rules", () => {
     expect(v.verdict).not.toBe("BUILD_MVP");
   });
 
-  it("maps the general set for non-product question types", () => {
+  it("maps the per-type set for non-product question types (V0.3)", () => {
+    // Explanation question with no risks/unknowns: provisional ceiling in the
+    // explanation set is UNRESOLVED — never a product verdict.
     const v = synthesizeProvisionalVerdict({
       question: "Why is the sky blue?",
       questionType: "explanation",
       analyses: [analysis({ agent: "reasoner" })],
       comparison: emptyComparison,
     });
-    // General set: the positive provisional ceiling is VALIDATE (no BUILD_MVP/PIVOT).
-    expect(["VALIDATE", "BUILD", "REFINE"].includes(v.verdict)).toBe(true);
-    expect(["BUILD_MVP", "PIVOT", "DO_NOT_BUILD"].includes(v.verdict)).toBe(false);
+    expect(["REFUTED", "PARTIALLY_SUPPORTED", "UNRESOLVED"].includes(v.verdict)).toBe(true);
+    expect(["BUILD_MVP", "PIVOT", "DO_NOT_BUILD", "BUILD"].includes(v.verdict)).toBe(false);
+
+    // Mathematical question with heavy risks: INCORRECT, not DO_NOT_BUILD.
+    const math = synthesizeProvisionalVerdict({
+      question: "Is this proof correct?",
+      questionType: "mathematical",
+      analyses: [
+        analysis({
+          agent: "reasoner",
+          keyPoints: ["claim"],
+          risks: ["step 3 unjustified", "counterexample exists", "domain error"],
+        }),
+      ],
+      comparison: emptyComparison,
+    });
+    expect(["INCORRECT", "PARTIALLY_CORRECT"].includes(math.verdict)).toBe(true);
+    expect(["BUILD_MVP", "PIVOT", "DO_NOT_BUILD"].includes(math.verdict)).toBe(false);
   });
 
   it("mixed evidence produces PIVOT/RECONSIDER", () => {
