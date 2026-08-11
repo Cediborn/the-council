@@ -648,6 +648,129 @@ describe("runCouncil — resilience", () => {
     }
   });
 
+  // ── V0.2.2.4 (Part 9): per-call telemetry + worst-case output caps. ──────
+
+  it("V0.2.2.4: records per-call telemetry for every provider call (Part 9)", async () => {
+    const provider = makeProvider((input) => {
+      if (input.system.includes("JUDGE")) return verdictJson;
+      if (input.system.includes("COMPARER")) return comparisonJson;
+      return agentJson();
+    });
+    const events = await collect(runCouncil({ mode: "FULL", question: "Q?", provider }));
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
+    if (verdict?.type === "verdict") {
+      const calls = verdict.usage.calls ?? [];
+      expect(calls).toHaveLength(6); // 4 analysts + comparer + judge
+      expect(
+        calls.map((c) => c.stage).sort(),
+      ).toEqual(["analysis", "analysis", "analysis", "analysis", "comparison", "judge"]);
+      expect(calls.every((c) => c.status === "COMPLETED")).toBe(true);
+      expect(calls.every((c) => c.model === "mock-model")).toBe(true);
+      expect(calls.every((c) => c.retries === 0)).toBe(true);
+      expect(calls.every((c) => c.durationMs >= 0)).toBe(true);
+      expect(calls.every((c) => c.inputTokens === 10 && c.outputTokens === 20)).toBe(true);
+      // Telemetry sums must match the aggregate counters.
+      expect(verdict.usage.agentCalls).toBe(6);
+      expect(verdict.usage.inputTokens).toBe(60);
+      expect(verdict.usage.outputTokens).toBe(120);
+    }
+  });
+
+  it("V0.2.2.4: telemetry records retries and attributes timeout outcomes", async () => {
+    // Transient failure: first call fails, the single retry succeeds.
+    let calls = 0;
+    const provider: ModelProvider = {
+      id: "mock",
+      model: "mock-model",
+      async chat(input: ProviderChatInput): Promise<ProviderChatResult> {
+        calls += 1;
+        if (input.system.includes("REASONER") && calls === 1) throw new Error("transient");
+        if (input.system.includes("JUDGE")) return { content: verdictJson, usage: { inputTokens: 1, outputTokens: 1 } };
+        if (input.system.includes("COMPARER")) return { content: comparisonJson, usage: { inputTokens: 1, outputTokens: 1 } };
+        return { content: agentJson(), usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    const events = await collect(runCouncil({ mode: "FULL", question: "Q?", provider }));
+    const verdict = events.find((e) => e.type === "verdict");
+    expect(verdict?.type).toBe("verdict");
+    if (verdict?.type === "verdict") {
+      const reasonerCall = (verdict.usage.calls ?? []).find((c) => c.agent === "reasoner");
+      expect(reasonerCall?.status).toBe("COMPLETED");
+      expect(reasonerCall?.retries).toBe(1);
+    }
+
+    // A persistently timing-out Judge is attributed TIMED_OUT — and the run
+    // still degrades to a PROVISIONAL verdict instead of dying or faking.
+    const timeoutProvider = makeProvider((input) => {
+      if (input.system.includes("JUDGE")) throw new Error("timeout after 60s");
+      if (input.system.includes("COMPARER")) return comparisonJson;
+      return agentJson();
+    });
+    const evs2 = await collect(runCouncil({ mode: "FULL", question: "Q?", provider: timeoutProvider }));
+    const v2 = evs2.find((e) => e.type === "verdict");
+    expect(v2?.type).toBe("verdict");
+    if (v2?.type === "verdict") {
+      const judgeCall = (v2.usage.calls ?? []).find((c) => c.agent === "judge");
+      expect(judgeCall?.status).toBe("TIMED_OUT");
+      expect(v2.verdict.degraded).toBe(true);
+      expect(v2.verdict.provisional).toBe(true);
+    }
+  });
+
+  it("V0.2.2.4: applies stage-specific worst-case output caps", async () => {
+    // Derive the expected caps from the same env knobs the orchestrator reads,
+    // so the test stays correct even when COUNCIL_*_TOKENS are set.
+    const expectedAnalysis = Number(process.env.COUNCIL_ANALYSIS_TOKENS ?? 700);
+    const expectedComparison = Number(process.env.COUNCIL_COMPARISON_TOKENS ?? 1100);
+    const expectedJudge = Number(process.env.COUNCIL_JUDGE_TOKENS ?? 1200);
+    const seen: { kind: string; maxTokens?: number }[] = [];
+    const provider: ModelProvider = {
+      id: "mock",
+      model: "mock-model",
+      async chat(input: ProviderChatInput): Promise<ProviderChatResult> {
+        const kind = input.system.includes("JUDGE")
+          ? "judge"
+          : input.system.includes("COMPARER")
+            ? "comparison"
+            : "analysis";
+        seen.push({ kind, maxTokens: input.maxTokens });
+        if (kind === "judge") return { content: verdictJson, usage: { inputTokens: 1, outputTokens: 1 } };
+        if (kind === "comparison") return { content: comparisonJson, usage: { inputTokens: 1, outputTokens: 1 } };
+        return { content: agentJson(), usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    await collect(runCouncil({ mode: "FULL", question: "Q?", provider }));
+    expect(seen.filter((s) => s.kind === "analysis").every((s) => s.maxTokens === expectedAnalysis)).toBe(true);
+    expect(seen.find((s) => s.kind === "comparison")?.maxTokens).toBe(expectedComparison);
+    expect(seen.find((s) => s.kind === "judge")?.maxTokens).toBe(expectedJudge);
+  });
+
+  it("V0.2.2.4: keeps full analyses for the Judge when the comparison falls back empty (no evidence loss)", async () => {
+    const judgeCalls: string[] = [];
+    const provider: ModelProvider = {
+      id: "mock",
+      model: "mock-model",
+      async chat(input: ProviderChatInput): Promise<ProviderChatResult> {
+        if (input.system.includes("JUDGE")) {
+          judgeCalls.push(input.user);
+          return { content: verdictJson, usage: { inputTokens: 1, outputTokens: 1 } };
+        }
+        // Garbage comparison output → runComparison falls back to an EMPTY
+        // comparison. The Judge must then still see the analyses' structured
+        // lists (full format), not just summaries + key points.
+        if (input.system.includes("COMPARER"))
+          return { content: "not json at all", usage: { inputTokens: 1, outputTokens: 1 } };
+        return { content: agentJson(), usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    await collect(runCouncil({ mode: "FULL", question: "Q?", provider }));
+    expect(judgeCalls).toHaveLength(1);
+    expect(judgeCalls[0]).toContain("Assumptions:");
+    expect(judgeCalls[0]).toContain("Risks:");
+    expect(judgeCalls[0]).toContain("Missing info:");
+  });
+
   it("attributes a timed-out analyst as TIMED_OUT, not just FAILED (Part 10)", async () => {
     const provider = makeProvider((input) => {
       if (input.system.includes("REASONER")) throw new Error("timeout after 60s");

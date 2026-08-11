@@ -239,6 +239,29 @@ export interface CouncilUsage {
   };
   /** V0.2.2.2: per-analyst wall-clock durations (ms), keyed by agent key. */
   agentDurations: Record<string, number>;
+  /**
+   * V0.2.2.4: per-call telemetry for performance forensics (Part 9). One entry
+   * per provider call (successful or not), so a slow run can be attributed to
+   * an exact stage/call/retry. Never contains question text or secrets.
+   */
+  calls?: CouncilCallTelemetry[];
+}
+
+/**
+ * V0.2.2.4: a single provider call's telemetry — stage, model, outcome,
+ * retries, duration and token counts. Recorded by the orchestrator so the
+ * performance audit is exact rather than inferred (Part 9).
+ */
+export interface CouncilCallTelemetry {
+  stage: "analysis" | "comparison" | "devils_advocate" | "reassessment" | "judge";
+  /** Agent key (or stage name for pipeline stages). */
+  agent: string;
+  model: string;
+  status: "COMPLETED" | "FAILED" | "TIMED_OUT";
+  retries: number;
+  durationMs: number;
+  inputTokens: number;
+  outputTokens: number;
 }
 
 /** Raw request body for POST /api/council. */

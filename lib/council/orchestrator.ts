@@ -25,6 +25,7 @@ import {
   verdictsForType,
   type AgentAnalysis,
   type AgentKey,
+  type CouncilCallTelemetry,
   type CouncilComparison,
   type CouncilEvent,
   type CouncilMode,
@@ -65,8 +66,26 @@ import {
  * while remaining a plain generator with no nested `yield`s.
  */
 
-const MAX_ANALYSIS_TOKENS = 1100;
-const MAX_VERDICT_TOKENS = 1600;
+/**
+ * V0.2.2.4 (Part 8): worst-case output caps per stage.
+ *
+ * Measured on the local CPU model: generation runs at ~5 tok/s (prompt eval
+ * is ~550 tok/s and effectively free), so wall time ≈ output tokens / 5. An
+ * unbounded cap is therefore the single biggest latency lever — a 1600-token
+ * Judge call is ~5+ minutes alone, and a call that outlives the provider
+ * timeout gets killed and retried from scratch (doubling the cost).
+ *
+ * These caps sit comfortably ABOVE what the output contracts require (the
+ * observed analyses average ~400-500 tokens), so they bound the rambling tail
+ * without cutting reasoning quality. Env-tunable for experimentation.
+ */
+const MAX_ANALYSIS_TOKENS = Number(process.env.COUNCIL_ANALYSIS_TOKENS ?? 700);
+// The comparison contract is the largest (agreements/disagreements/contradictions
+// + lists + strongest/weakest argument), so it keeps a generous cap.
+const MAX_COMPARISON_TOKENS = Number(process.env.COUNCIL_COMPARISON_TOKENS ?? 1100);
+const MAX_DEVILS_ADVOCATE_TOKENS = Number(process.env.COUNCIL_DEVILS_ADVOCATE_TOKENS ?? 800);
+const MAX_REASSESSMENT_TOKENS = Number(process.env.COUNCIL_REASSESSMENT_TOKENS ?? 700);
+const MAX_VERDICT_TOKENS = Number(process.env.COUNCIL_JUDGE_TOKENS ?? 1200);
 const MAX_RETRIES = 1;
 
 /** Known keys of each structured output, used to unwrap double-encoded JSON. */
@@ -214,6 +233,8 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
       judgeMs: 0,
     },
     agentDurations: {},
+    // V0.2.2.4 (Part 9): per-call telemetry — see CouncilCallTelemetry.
+    calls: [],
   };
 
   const queue: CouncilEvent[] = [];
@@ -299,6 +320,8 @@ export async function* runCouncil(opts: CouncilRunOptions): AsyncGenerator<Counc
             },
             analysisProvider,
             signal,
+            { stage: "analysis", agent },
+            usage,
           );
           usage.inputTokens += result.usage.inputTokens;
           usage.outputTokens += result.usage.outputTokens;
@@ -484,26 +507,77 @@ interface RetriedResult {
   retries: number;
 }
 
+/** V0.2.2.4: which stage/call a provider call belongs to (Part 9 telemetry). */
+interface StageCallMeta {
+  stage: CouncilCallTelemetry["stage"];
+  agent: string;
+}
+
+/**
+ * One provider call with a single retry for non-abort failures, recording
+ * per-call telemetry (Part 9). Retries are kept as a safety net for transient
+ * provider errors; V0.2.2.4 makes them rare by capping worst-case output so a
+ * legitimate call fits inside the provider timeout on the first attempt.
+ */
 async function callWithRetry(
   input: Omit<ProviderChatInput, "signal">,
   provider: ModelProvider,
-  signal?: AbortSignal,
+  signal: AbortSignal | undefined,
+  meta: StageCallMeta,
+  usage: CouncilUsage,
 ): Promise<RetriedResult> {
+  const t0 = Date.now();
   let retries = 0;
   let lastError: unknown;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const result = await provider.chat({ ...input, signal });
+      usage.calls?.push({
+        ...meta,
+        model: provider.model,
+        status: "COMPLETED",
+        retries,
+        durationMs: Date.now() - t0,
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
+      });
       return { ...result, retries };
     } catch (err) {
       lastError = err;
-      if (signal?.aborted) throw err; // don't retry aborted requests
+      if (signal?.aborted) {
+        // A user-initiated cancel is not a stage failure. The telemetry enum has
+        // no CANCELLED value, so it is recorded as FAILED (the run itself will
+        // not complete) and rethrown so the pump bails out.
+        usage.calls?.push({
+          ...meta,
+          model: provider.model,
+          status: "FAILED",
+          retries: attempt,
+          durationMs: Date.now() - t0,
+          inputTokens: 0,
+          outputTokens: 0,
+        });
+        throw err;
+      }
       retries = attempt + 1;
     }
   }
+  usage.calls?.push({
+    ...meta,
+    model: provider.model,
+    status: isTimeoutError(lastError) ? "TIMED_OUT" : "FAILED",
+    // Clamp: with MAX_RETRIES=1 the loop counter reaches 2 on total failure
+    // (attempt 0 + 1 retry), but only one retry ever actually occurred.
+    retries: Math.min(retries, MAX_RETRIES),
+    durationMs: Date.now() - t0,
+    inputTokens: 0,
+    outputTokens: 0,
+  });
   throw lastError;
 }
 
+/** Full analysis detail — used by the COMPARISON stage, which must extract
+ * agreements/disagreements/shared assumptions/risks/missing information. */
 function formatAnalysesForJudge(analyses: AgentAnalysis[]): string {
   return analyses
     .map((a) => {
@@ -519,6 +593,61 @@ function formatAnalysesForJudge(analyses: AgentAnalysis[]): string {
       return lines.join("\n");
     })
     .join("\n\n");
+}
+
+/**
+ * V0.2.2.4 (Part 4): compact analysis representation for DOWNSTREAM stages
+ * (Devil's Advocate, Reassessment, Judge). Those stages already receive the
+ * comparison — which distilled the structured lists (assumptions, risks,
+ * missing information, disagreements) from the full analyses — so re-sending
+ * every list verbatim is redundant context for a context-limited local model.
+ * Each analysis keeps its stance/confidence/evidence and its core argument
+ * (summary + key points), which is what evaluating reasoning quality needs.
+ */
+function formatAnalysesCompact(analyses: AgentAnalysis[]): string {
+  return analyses
+    .map((a) => {
+      if (a.failed) return `## ${a.name} — FAILED\n(no response received)`;
+      const lines = [
+        `## ${a.name} (stance: ${labelForStance(a.stance)}, confidence: ${a.confidence}, evidence quality: ${a.evidenceQuality ?? "UNKNOWN"})`,
+        a.summary,
+      ];
+      if (a.keyPoints.length) lines.push(`Key points: ${a.keyPoints.join("; ")}`);
+      return lines.join("\n");
+    })
+    .join("\n\n");
+}
+
+/**
+ * V0.2.2.4: does the comparison carry any actual synthesis? When the
+ * comparison stage failed or returned an empty fallback, the downstream stages
+ * must NOT lose the analyses' structured lists (assumptions/risks/missing
+ * info) — they are only redundant while the comparison actually distilled
+ * them. Fall back to the full format so evidence is never dropped.
+ */
+function comparisonHasContent(comparison: CouncilComparison | null): boolean {
+  if (!comparison) return false;
+  return (
+    comparison.agreements.length > 0 ||
+    comparison.disagreements.length > 0 ||
+    comparison.contradictions.length > 0 ||
+    comparison.sharedAssumptions.length > 0 ||
+    comparison.missingInformation.length > 0 ||
+    comparison.risks.length > 0 ||
+    comparison.uniqueInsights.length > 0 ||
+    comparison.strongestArgument !== "" ||
+    comparison.weakestArgument !== ""
+  );
+}
+
+/** Pick the compact form when the comparison carries the synthesis, else full. */
+function formatAnalysesForStage(
+  analyses: AgentAnalysis[],
+  comparison: CouncilComparison | null,
+): string {
+  return comparisonHasContent(comparison)
+    ? formatAnalysesCompact(analyses)
+    : formatAnalysesForJudge(analyses);
 }
 
 function formatComparison(comparison: CouncilComparison | null): string {
@@ -632,10 +761,12 @@ async function runComparison(
         system: `${def.system}\n\n${def.outputContract}`,
         user: `Question: ${question}${buildClassificationContext(classification)}\n\nIndependent analyses:\n${formatAnalysesForJudge(analyses)}`,
         temperature: 0.3,
-        maxTokens: MAX_ANALYSIS_TOKENS,
+        maxTokens: MAX_COMPARISON_TOKENS,
       },
       provider,
       signal,
+      { stage: "comparison", agent: "comparer" },
+      usage,
     );
     usage.inputTokens += result.usage.inputTokens;
     usage.outputTokens += result.usage.outputTokens;
@@ -697,12 +828,14 @@ async function runDevilsAdvocate(
     const result = await callWithRetry(
       {
         system: `${def.system}\n\n${def.outputContract}`,
-        user: `Question: ${question}${buildClassificationContext(classification)}\n\nIndependent analyses:\n${formatAnalysesForJudge(analyses)}\n\nComparison:\n${formatComparison(comparison)}`,
+        user: `Question: ${question}${buildClassificationContext(classification)}\n\nIndependent analyses:\n${formatAnalysesForStage(analyses, comparison)}\n\nComparison:\n${formatComparison(comparison)}`,
         temperature: 0.4,
-        maxTokens: MAX_ANALYSIS_TOKENS,
+        maxTokens: MAX_DEVILS_ADVOCATE_TOKENS,
       },
       provider,
       signal,
+      { stage: "devils_advocate", agent: "devils_advocate" },
+      usage,
     );
     usage.inputTokens += result.usage.inputTokens;
     usage.outputTokens += result.usage.outputTokens;
@@ -756,12 +889,14 @@ async function runReassessment(
     const result = await callWithRetry(
       {
         system: `${def.system}\n\n${def.outputContract}`,
-        user: `Question: ${question}${buildClassificationContext(classification)}\n\nIndependent analyses:\n${formatAnalysesForJudge(analyses)}\n\nComparison:\n${formatComparison(comparison)}\n\nDevil's Advocate stress-test:\n${formatDevilsAdvocateForJudge(devilsAdvocate)}`,
+        user: `Question: ${question}${buildClassificationContext(classification)}\n\nIndependent analyses:\n${formatAnalysesForStage(analyses, comparison)}\n\nComparison:\n${formatComparison(comparison)}\n\nDevil's Advocate stress-test:\n${formatDevilsAdvocateForJudge(devilsAdvocate)}`,
         temperature: 0.4,
-        maxTokens: MAX_ANALYSIS_TOKENS,
+        maxTokens: MAX_REASSESSMENT_TOKENS,
       },
       provider,
       signal,
+      { stage: "reassessment", agent: "reassessor" },
+      usage,
     );
     usage.inputTokens += result.usage.inputTokens;
     usage.outputTokens += result.usage.outputTokens;
@@ -832,12 +967,14 @@ async function runJudge(
     const result = await callWithRetry(
       {
         system: `${judgeSystemFor(classification.type)}\n\n${judgeOutputContract(classification.type)}`,
-        user: `Question: ${question}${buildClassificationContext(classification)}\n\nIndependent analyses:\n${formatAnalysesForJudge(analyses)}\n\nComparison:\n${formatComparison(comparison)}${daSection}${reassessmentSection}${failedNote}`,
+        user: `Question: ${question}${buildClassificationContext(classification)}\n\nIndependent analyses:\n${formatAnalysesForStage(analyses, comparison)}\n\nComparison:\n${formatComparison(comparison)}${daSection}${reassessmentSection}${failedNote}`,
         temperature: 0.3,
         maxTokens: MAX_VERDICT_TOKENS,
       },
       provider,
       signal,
+      { stage: "judge", agent: "judge" },
+      usage,
     );
     usage.inputTokens += result.usage.inputTokens;
     usage.outputTokens += result.usage.outputTokens;

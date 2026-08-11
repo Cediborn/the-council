@@ -36,9 +36,18 @@ export class OllamaProvider implements ModelProvider {
 
   async chat(input: ProviderChatInput): Promise<ProviderChatResult> {
     const controller = new AbortController();
-    // Timeout is env-configurable (default 180s) so a hung model call can
+    // Timeout is env-configurable (default 240s) so a hung model call can
     // never block the Council forever (Part 22).
-    const timeoutMs = Number(process.env.COUNCIL_TIMEOUT_MS ?? 180_000);
+    //
+    // V0.2.2.4 (Part 8): the previous 180s default was TIGHTER than the local
+    // CPU model's generation speed (~5 tok/s: a 700-token analysis call needs
+    // ~140s of generation alone), so slow-but-legitimate calls were killed at
+    // 180s and then retried from scratch — each run wasted a full timeout
+    // window per retried stage (measured: practicalist 265s = 180s wasted +
+    // 85s success; comparison 354s fits the same pattern). 240s lets capped-
+    // output calls finish on the FIRST attempt; retries now only fire for
+    // genuine provider failures, not for legitimate slowness.
+    const timeoutMs = Number(process.env.COUNCIL_TIMEOUT_MS ?? 240_000);
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const onOuterAbort = () => controller.abort();
     input.signal?.addEventListener("abort", onOuterAbort);

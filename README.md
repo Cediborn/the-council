@@ -1,4 +1,4 @@
-# COUNCIL — V0.2.2.3
+# COUNCIL — V0.2.2.4
 
 A general-purpose, multi-agent **deliberation engine**. Ask it anything —
 everyday decisions, school questions, business ideas, code questions, life
@@ -54,6 +54,69 @@ model** (V0.2.2.3): the Judge always returns a verdict and reports its
 uncertainty separately via `informationSufficiency` — the no-verdict state is
 reserved exclusively for the system's genuinely-impossible case (nothing to
 synthesize from).
+
+## V0.2.2.4 changes (performance forensics)
+
+A measured optimization pass against the real bottleneck, not arbitrary
+cutting. Forensics on the actual 1050s DEEP run (measured on the local CPU
+model, qwen2.5:1.5b):
+
+- **The system is generation-bound, not context-bound.** Prompt eval runs at
+  ~550 tok/s (a 3k-token context costs ~5s); **generation runs at ~5 tok/s**.
+  Wall time ≈ output tokens ÷ 5. So the levers are output volume and wasted
+  calls — not smaller contexts.
+- **Retry-doubling was the biggest waste (~360s of the 1050s run).** The
+  180s timeout was *tighter* than the model's own generation speed, so
+  slow-but-legitimate calls were killed mid-generation and retried from
+  scratch: measured 265s practicalist = 180s killed + 85s success; the 354s
+  comparison fits the same pattern. Fix: default timeout raised to 240s
+  (`COUNCIL_TIMEOUT_MS` overrides) so a legitimate call finishes on its
+  first attempt.
+- **Unbounded output caps let calls ramble.** Analysis was capped at 1100
+  tokens and the Judge at 1600 (a 1600-token call ≈ 5+ min). Caps are now
+  per-stage and sit just above what the contracts need (analysis 700,
+  comparison 1100, Devil's Advocate 800, reassessment 700, judge 1200),
+  bounding the worst-case generation while the observed analyses (~400-500
+  tokens) are untouched. Tunable via `COUNCIL_ANALYSIS_TOKENS`,
+  `COUNCIL_COMPARISON_TOKENS`, `COUNCIL_DEVILS_ADVOCATE_TOKENS`,
+  `COUNCIL_REASSESSMENT_TOKENS`, `COUNCIL_JUDGE_TOKENS`.
+- **Downstream stages no longer re-receive every raw list.** The comparison
+  already distills assumptions/risks/missing information, so Devil's
+  Advocate, Reassessment, and Judge now get a compact per-analysis form
+  (stance, confidence, evidence quality, summary, key points) plus the
+  comparison — the same evidence, without the redundant transcript.
+- **Per-call telemetry (Part 9).** Every provider call is now recorded in
+  `usage.calls` — stage, agent, model, status (COMPLETED/FAILED/TIMED_OUT),
+  retries, duration (ms; absolute start/end timestamps are deliberately
+  omitted — the persisted `startedAt` + `durationMs` give the same
+  attribution with less noise), input/output tokens — so any future slow run
+  can be attributed to an exact call instead of inferred. Persisted
+  server-side; never contains question text.
+- **Concurrency was verified, not assumed.** Analysts already run under
+  `Promise.all` (they are bounded by the slowest member, and events arrive as
+  each finishes); the delay is generation throughput, so nothing was gained
+  by restructuring. What was gained: the analysis stage no longer contains a
+  killed-then-retried member.
+
+Regression (measured, DEEP product question on the same CPU model):
+
+| Stage | Before (V0.2.2.3) | After (V0.2.2.4) |
+| --- | --- | --- |
+| Analysis | 251.7s | 198.8s |
+| Comparison | 354.0s | 154.4s |
+| Devil's Advocate | 87.5s | 73.1s |
+| Reassessment | 85.6s | 83.6s |
+| Judge | 271.2s | 159.6s |
+| **Total** | **1050.1s** | **669.5s** |
+
+**−36% total** (8 calls, 0 retries, 0 failures — the telemetry confirms no
+wasted first attempts). The comparison and Judge stages were where the
+180s-timeout-retry waste and the uncapped generation tail lived.
+
+Known classifier quirk (pre-existing, out of scope here): the keyword
+`script` matches as a substring of `subscription`, so a subscription-box
+question classifies as Technical instead of Business. Noted for the next
+version — it only changes the verdict set offered, never the pipeline cost.
 
 ## V0.2.2.3 changes (stabilization & verification)
 
@@ -240,7 +303,10 @@ verdict meta line.
   `COUNCIL_MODEL_ANALYSIS`, `COUNCIL_MODEL_COMPARISON`,
   `COUNCIL_MODEL_DEVILS_ADVOCATE`, `COUNCIL_MODEL_REASSESSMENT`, and
   `COUNCIL_MODEL_JUDGE` env vars. Timeouts are configurable via
-  `COUNCIL_TIMEOUT_MS`.
+  `COUNCIL_TIMEOUT_MS` (default 240s for Ollama, 120s for cloud providers).
+  Per-stage output caps are tunable via `COUNCIL_ANALYSIS_TOKENS`,
+  `COUNCIL_COMPARISON_TOKENS`, `COUNCIL_DEVILS_ADVOCATE_TOKENS`,
+  `COUNCIL_REASSESSMENT_TOKENS`, and `COUNCIL_JUDGE_TOKENS`.
 - **Sturdier parsing.** Empty-string, null, and string-wrapped JSON list
   fields no longer degrade a whole agent — the parser now handles them.
 
